@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Kasir UMKM - FIFO &amp; Expired Control</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#ecfdf5',
+              100: '#d1fae5',
+              500: '#10b981',
+              600: '#059669',
+              700: '#047857',
+              800: '#065f46'
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    html, body { height: 100%; }
+    body { background: #f0fdf4; }
+    .safe-bottom { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+    .sheet-enter { transform: translateY(100%); }
+    .sheet-open { transform: translateY(0); }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .card-shadow { box-shadow: 0 8px 24px rgba(6, 95, 70, 0.08); }
+    .chart-bar { transition: height 0.3s ease; }
+    @media (max-width: 767px) {
+      body { max-width: 440px; margin: 0 auto; }
+      #sidebar { display: none !important; }
+    }
+    @media (min-width: 768px) {
+      body { max-width: none; margin: 0; }
+      #mobile-nav { display: none !important; }
+      .safe-bottom { padding-bottom: 24px; }
+      #cart-overlay, #modal-overlay, #confirm-overlay, #success-overlay {
+        max-width: none !important;
+      }
+    }
+    @media print {
+      body * { visibility: hidden; }
+      #receipt-print, #receipt-print * { visibility: visible; }
+      #receipt-print { position: absolute; left: 0; top: 0; width: 100%; }
+    }
+  </style>
+</head>
+<body class="bg-emerald-50 text-slate-800 font-sans antialiased">
+  <div id="app" class="min-h-screen relative overflow-x-hidden md:flex md:min-h-screen">
+    <aside id="sidebar" class="hidden md:flex md:flex-col w-56 shrink-0 bg-emerald-800 text-white min-h-screen sticky top-0">
+      <div class="px-4 pt-5 pb-4 border-b border-emerald-700">
+        <p class="text-[11px] uppercase tracking-widest text-emerald-200">UMKM Kasir</p>
+        <h1 class="text-base font-bold leading-tight">FIFO &amp; Expired</h1>
+      </div>
+      <nav id="side-nav" class="flex-1 p-3 space-y-1 text-sm"></nav>
+    </aside>
+
+    <div class="flex-1 min-w-0 relative">
+      <header class="sticky top-0 z-30 bg-emerald-700 text-white px-4 pt-4 pb-3">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-[11px] uppercase tracking-widest text-emerald-200">UMKM Kasir</p>
+            <h1 class="text-lg font-bold leading-tight">FIFO &amp; Expired Control</h1>
+          </div>
+          <button id="btn-notif" class="relative w-10 h-10 rounded-full bg-emerald-600 flex items-center justify-center" type="button">
+            <span class="text-lg">!</span>
+            <span id="notif-badge" class="hidden absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-[10px] font-bold flex items-center justify-center">0</span>
+          </button>
+        </div>
+        <p id="header-sub" class="mt-1 text-xs text-emerald-100">Kelola stok, kasir, dan kedaluwarsa</p>
+      </header>
+
+      <main id="page-dashboard" class="hidden px-4 pt-4 safe-bottom">
+        <div id="dash-stats" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2 mb-3"></div>
+        <div class="grid md:grid-cols-2 gap-3 mb-3">
+          <section class="bg-white rounded-2xl p-4 card-shadow">
+            <h2 class="font-bold text-emerald-800 text-sm mb-3">Grafik Penjualan 7 Hari</h2>
+            <div id="dash-chart" class="h-36 flex items-end gap-1"></div>
+          </section>
+          <section class="bg-white rounded-2xl p-4 card-shadow">
+            <h2 class="font-bold text-emerald-800 text-sm mb-2">Alert H-7 &amp; H-3</h2>
+            <div id="dash-alerts" class="space-y-2 max-h-36 overflow-y-auto no-scrollbar"></div>
+          </section>
+        </div>
+        <div class="grid md:grid-cols-2 gap-3 mb-3">
+          <section class="bg-white rounded-2xl p-4 card-shadow">
+            <h2 class="font-bold text-emerald-800 text-sm mb-2">Produk Hampir Expired</h2>
+            <div id="dash-near-exp" class="space-y-2"></div>
+          </section>
+          <section class="bg-white rounded-2xl p-4 card-shadow">
+            <h2 class="font-bold text-emerald-800 text-sm mb-2">Stok Menipis</h2>
+            <div id="dash-low-stock" class="space-y-2"></div>
+          </section>
+        </div>
+        <section class="bg-white rounded-2xl p-4 card-shadow mb-3">
+          <h2 class="font-bold text-emerald-800 text-sm mb-2">Aktivitas Transaksi Terbaru</h2>
+          <div id="dash-activity" class="space-y-2"></div>
+        </section>
+      </main>
+
+      <main id="page-kasir" class="px-4 pt-4 safe-bottom">
+        <div class="flex gap-2 mb-3">
+          <input id="search-kasir" type="search" placeholder="Cari produk..." class="flex-1 h-11 px-3 rounded-xl border border-emerald-100 bg-white text-sm outline-none focus:ring-2 focus:ring-emerald-400" />
+          <button id="btn-open-cart" type="button" class="h-11 px-3 rounded-xl bg-emerald-600 text-white text-sm font-semibold">Keranjang</button>
+        </div>
+        <div id="kasir-cats" class="flex gap-2 overflow-x-auto no-scrollbar mb-3"></div>
+        <div id="kasir-list" class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>
+        <p id="kasir-empty" class="hidden text-center text-sm text-slate-500 py-16">Belum ada produk. Tambah stok dulu di menu Stok.</p>
+      </main>
+
+      <main id="page-produk" class="hidden px-4 pt-4 safe-bottom">
+        <button id="btn-add-produk" type="button" class="w-full md:w-auto h-11 px-4 mb-3 rounded-xl bg-emerald-600 text-white font-semibold text-sm">Tambah Produk</button>
+        <input id="search-produk" type="search" placeholder="Cari nama / SKU..." class="w-full h-11 px-3 mb-3 rounded-xl border border-emerald-100 bg-white text-sm" />
+        <div id="produk-list" class="space-y-2"></div>
+      </main>
+
+      <main id="page-stok" class="hidden px-4 pt-4 safe-bottom">
+        <form id="form-barang" class="bg-white rounded-2xl p-4 card-shadow mb-4 space-y-3">
+          <h2 class="font-bold text-emerald-800">Input Barang Baru</h2>
+          <input name="name" required placeholder="Nama barang" class="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm" />
+          <div class="grid grid-cols-2 gap-2">
+            <input name="stock" type="number" min="1" required placeholder="Stok" class="h-11 px-3 rounded-xl border border-slate-200 text-sm" />
+            <input name="price" type="number" min="0" required placeholder="Harga (Rp)" class="h-11 px-3 rounded-xl border border-slate-200 text-sm" />
+          </div>
+          <input name="location" required placeholder="Lokasi rak (contoh: A-12)" class="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm" />
+          <label class="block text-xs text-slate-500">Tanggal Expired</label>
+          <input name="expiredDate" type="date" required class="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm" />
+          <button type="submit" class="w-full h-11 rounded-xl bg-emerald-600 text-white font-semibold">Simpan Batch FIFO</button>
+        </form>
+        <div id="stok-toolbar" class="flex gap-2 mb-3">
+          <input id="search-stok" type="search" placeholder="Cari produk stok..." class="flex-1 h-11 px-3 rounded-xl border border-emerald-100 bg-white text-sm" />
+        </div>
+        <div id="stok-list" class="space-y-2"></div>
+      </main>
+
+      <main id="page-expired" class="hidden px-4 pt-4 safe-bottom">
+        <div class="bg-amber-50 border border-amber-200 rounded-2xl p-3 mb-3 text-sm text-amber-800">
+          Peringatan H-7: batch yang kedaluwarsa dalam 7 hari atau sudah lewat. Filter H-3, hari ini, dan prioritas penjualan juga tersedia.
+        </div>
+        <div id="expired-filters" class="flex gap-2 overflow-x-auto no-scrollbar mb-3"></div>
+        <div id="expired-list" class="space-y-2"></div>
+      </main>
+
+      <main id="page-riwayat" class="hidden px-4 pt-4 safe-bottom">
+        <input id="search-riwayat" type="search" placeholder="Cari no. transaksi..." class="w-full h-11 px-3 mb-3 rounded-xl border border-emerald-100 bg-white text-sm" />
+        <div id="riwayat-list" class="space-y-2"></div>
+      </main>
+
+      <main id="page-laporan" class="hidden px-4 pt-4 safe-bottom">
+        <div class="bg-white rounded-2xl p-4 card-shadow mb-4">
+          <p class="text-xs text-slate-500">Total Omzet</p>
+          <p id="omzet" class="text-2xl font-bold text-emerald-700">Rp 0</p>
+          <p id="trx-count" class="text-xs text-slate-400 mt-1">0 transaksi</p>
+        </div>
+        <div class="flex gap-2 overflow-x-auto no-scrollbar mb-3" id="laporan-period"></div>
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          <input id="laporan-from" type="date" class="h-10 px-2 rounded-xl border border-slate-200 text-xs bg-white" />
+          <input id="laporan-to" type="date" class="h-10 px-2 rounded-xl border border-slate-200 text-xs bg-white" />
+        </div>
+        <div class="flex gap-2 mb-3">
+          <button id="btn-export-csv" type="button" class="flex-1 h-10 rounded-xl bg-white border border-emerald-200 text-emerald-700 text-sm font-semibold">Export CSV</button>
+          <button id="btn-export-json" type="button" class="flex-1 h-10 rounded-xl bg-white border border-emerald-200 text-emerald-700 text-sm font-semibold">Export JSON</button>
+        </div>
+        <div id="laporan-summary" class="space-y-2 mb-3"></div>
+        <div id="laporan-list" class="space-y-2"></div>
+      </main>
+
+      <main id="page-pengaturan" class="hidden px-4 pt-4 safe-bottom">
+        <form id="form-settings" class="bg-white rounded-2xl p-4 card-shadow mb-4 space-y-3">
+          <h2 class="font-bold text-emerald-800">Pengaturan Toko</h2>
+          <input name="storeName" placeholder="Nama toko" class="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm" />
+          <input name="cashierName" placeholder="Nama kasir" class="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm" />
+          <label class="block text-xs text-slate-500">Pajak (%) — isi 0 jika tidak perlu</label>
+          <input name="taxPercent" type="number" min="0" max="100" step="0.1" class="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm" />
+          <button type="submit" class="w-full h-11 rounded-xl bg-emerald-600 text-white font-semibold">Simpan Pengaturan</button>
+        </form>
+        <div class="bg-white rounded-2xl p-4 card-shadow space-y-2">
+          <h2 class="font-bold text-emerald-800 mb-2">Backup Data</h2>
+          <button id="btn-backup" type="button" class="w-full h-11 rounded-xl bg-emerald-600 text-white font-semibold text-sm">Backup JSON</button>
+          <label class="w-full h-11 rounded-xl bg-white border border-emerald-200 text-emerald-700 font-semibold text-sm flex items-center justify-center cursor-pointer">
+            Restore JSON
+            <input id="input-restore" type="file" accept="application/json" class="hidden" />
+          </label>
+          <button id="btn-export-laporan-file" type="button" class="w-full h-11 rounded-xl bg-white border border-emerald-200 text-emerald-700 font-semibold text-sm">Export Laporan JSON</button>
+          <button id="btn-reset" type="button" class="w-full h-11 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 font-semibold text-sm">Reset Semua Data</button>
+        </div>
+      </main>
+
+      <nav id="mobile-nav" class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[440px] z-40 px-3 pb-3">
+        <div id="bottom-nav" class="bg-white rounded-2xl card-shadow border border-emerald-100 grid grid-cols-4 overflow-hidden py-1"></div>
+      </nav>
+    </div>
+
+    <div id="cart-overlay" class="hidden fixed inset-0 z-50 max-w-[440px] mx-auto md:max-w-none bg-black/40">
+      <div id="cart-sheet" class="absolute bottom-0 left-0 right-0 md:left-auto md:right-6 md:bottom-6 md:w-[400px] bg-white rounded-t-3xl md:rounded-3xl p-4 sheet-enter transition-transform duration-300 max-h-[88vh] flex flex-col">
+        <div class="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-3 md:hidden"></div>
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold">Keranjang Belanja</h3>
+          <button id="btn-close-cart" type="button" class="text-sm text-slate-500">Tutup</button>
+        </div>
+        <div id="cart-items" class="flex-1 overflow-y-auto no-scrollbar space-y-2 min-h-[80px]"></div>
+        <div class="pt-3 border-t mt-2 space-y-2 text-sm">
+          <div class="flex justify-between"><span>Subtotal</span><span id="cart-subtotal">Rp 0</span></div>
+          <div class="flex items-center justify-between gap-2">
+            <span>Diskon (Rp)</span>
+            <input id="cart-discount" type="number" min="0" value="0" class="w-28 h-9 px-2 rounded-lg border border-slate-200 text-right text-sm" />
+          </div>
+          <div class="flex justify-between"><span>Pajak</span><span id="cart-tax">Rp 0</span></div>
+          <div class="flex justify-between font-bold text-base">
+            <span>Total</span>
+            <span id="cart-total">Rp 0</span>
+          </div>
+          <p class="text-xs text-slate-500 pt-1">Metode pembayaran</p>
+          <div id="pay-methods" class="grid grid-cols-4 gap-1"></div>
+          <div id="paid-wrap">
+            <label class="text-xs text-slate-500">Uang diterima</label>
+            <input id="cart-paid" type="number" min="0" value="0" class="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm" />
+            <div class="flex justify-between mt-1 font-semibold">
+              <span>Kembalian</span>
+              <span id="cart-change">Rp 0</span>
+            </div>
+          </div>
+          <button id="btn-checkout" type="button" class="w-full h-12 rounded-xl bg-emerald-600 text-white font-semibold">Bayar</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-overlay" class="hidden fixed inset-0 z-50 max-w-[440px] mx-auto md:max-w-none bg-black/40 flex items-end md:items-center md:justify-center">
+      <div id="modal-box" class="w-full md:max-w-lg bg-white rounded-t-3xl md:rounded-3xl p-4 max-h-[88vh] overflow-y-auto no-scrollbar">
+        <div class="flex items-center justify-between mb-3">
+          <h3 id="modal-title" class="font-bold">Detail</h3>
+          <button id="btn-close-modal" type="button" class="text-sm text-slate-500">Tutup</button>
+        </div>
+        <div id="modal-body"></div>
+      </div>
+    </div>
+
+    <div id="confirm-overlay" class="hidden fixed inset-0 z-[55] max-w-[440px] mx-auto md:max-w-none bg-black/40 flex items-center justify-center px-6">
+      <div class="w-full max-w-sm bg-white rounded-2xl p-4 card-shadow">
+        <p id="confirm-msg" class="text-sm text-slate-700 mb-4">Yakin?</p>
+        <div class="flex gap-2">
+          <button id="confirm-no" type="button" class="flex-1 h-10 rounded-xl border border-slate-200 text-sm">Batal</button>
+          <button id="confirm-yes" type="button" class="flex-1 h-10 rounded-xl bg-rose-600 text-white text-sm font-semibold">Ya</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="success-overlay" class="hidden fixed inset-0 z-[55] max-w-[440px] mx-auto md:max-w-none bg-black/40 flex items-center justify-center px-6">
+      <div class="w-full max-w-sm bg-white rounded-2xl p-4 card-shadow text-center">
+        <p class="font-bold text-emerald-700 text-lg">Transaksi Berhasil</p>
+        <p id="success-change" class="text-sm text-slate-600 mt-1"></p>
+        <p id="success-id" class="text-xs text-slate-400 mt-1"></p>
+        <div class="flex gap-2 mt-4">
+          <button id="btn-print-receipt" type="button" class="flex-1 h-10 rounded-xl border border-emerald-200 text-emerald-700 text-sm font-semibold">Cetak Struk</button>
+          <button id="btn-close-success" type="button" class="flex-1 h-10 rounded-xl bg-emerald-600 text-white text-sm font-semibold">Selesai</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="hidden fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] max-w-[90%] px-4 py-2 rounded-full bg-slate-800 text-white text-sm"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
