@@ -2,17 +2,17 @@
   'use strict';
 
   var STORAGE_KEYS = {
-    batches: 'umkm_batches_v1',
     cart: 'umkm_cart_v1',
-    transactions: 'umkm_trx_v1',
-    products: 'umkm_products_v1',
-    settings: 'umkm_settings_v1'
+    session: 'umkm_session_v1',
+    ui: 'umkm_ui_v1'
   };
+
+  var API_FITUR = 'https://script.google.com/macros/s/AKfycby9vdFhaJcib69-2jR5egzK_oknI5k-7kNFVQ4XuJ68lrrYLXphuWHGTECG5_Ng7zT1/exec';
+  var API_LOGIN = 'https://script.google.com/macros/s/AKfycbzzcZ5kfaLyKqdtc1Fgbq3lJO_rSvHtogrSrJWLIQdC-b-92JpLvt7C7FluXet3tCLA/exec';
 
   var PAGES = [
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'kasir', label: 'Kasir' },
-    { id: 'produk', label: 'Produk' },
     { id: 'stok', label: 'Stok' },
     { id: 'expired', label: 'Expired' },
     { id: 'riwayat', label: 'Riwayat' },
@@ -23,13 +23,27 @@
   var PAGE_SUB = {
     dashboard: 'Ringkasan omzet, stok, dan kedaluwarsa',
     kasir: 'Katalog & Kasir FIFO',
-    produk: 'Master produk UMKM',
-    stok: 'Input & daftar batch stok',
+    stok: 'Kelola produk & batch stok',
     expired: 'Monitoring H-7 kedaluwarsa',
     riwayat: 'Riwayat transaksi kasir',
     laporan: 'Riwayat transaksi otomatis',
-    pengaturan: 'Toko, pajak, dan backup data'
+    pengaturan: 'Toko, tampilan, pajak, dan backup data'
   };
+
+  var UI_BRANDS = [
+    { id: 'hijau', hex: '#005A36' },
+    { id: 'teal', hex: '#0f766e' },
+    { id: 'biru', hex: '#1d4ed8' },
+    { id: 'ungu', hex: '#6d28d9' },
+    { id: 'merah', hex: '#b91c1c' }
+  ];
+  var UI_BUTTONS = [
+    { id: 'emerald', hex: '#059669' },
+    { id: 'teal', hex: '#0d9488' },
+    { id: 'biru', hex: '#2563eb' },
+    { id: 'oranye', hex: '#ea580c' },
+    { id: 'merah', hex: '#dc2626' }
+  ];
 
   var PAY_METHODS = [
     { id: 'tunai', label: 'Tunai' },
@@ -47,78 +61,210 @@
     settings: { storeName: 'UMKM Kasir', cashierName: 'Kasir', taxPercent: 0 },
     kasirCat: 'Semua',
     payMethod: 'tunai',
-    lastTrx: null
+    lastTrx: null,
+    expiredFilter: 'semua',
+    laporanPeriod: '7',
+    laporanFrom: '',
+    laporanTo: '',
+    user: null,
+    busy: false,
+    ui: { theme: 'light', brand: 'hijau', button: 'emerald', text: 'sedang', brandHex: '#005A36', buttonHex: '#059669' }
   };
 
-  /* Baca data dari LocalStorage dan isi state aplikasi */
-  function loadState() {
-    try { state.batches = JSON.parse(localStorage.getItem(STORAGE_KEYS.batches) || '[]'); } catch (e) { state.batches = []; }
+  /* Muat preferensi lokal per perangkat (keranjang dan tampilan) */
+  function loadLocalPrefs() {
     try { state.cart = JSON.parse(localStorage.getItem(STORAGE_KEYS.cart) || '[]'); } catch (e) { state.cart = []; }
-    try { state.transactions = JSON.parse(localStorage.getItem(STORAGE_KEYS.transactions) || '[]'); } catch (e) { state.transactions = []; }
-    try { state.products = JSON.parse(localStorage.getItem(STORAGE_KEYS.products) || '[]'); } catch (e) { state.products = []; }
-    try {
-      var s = JSON.parse(localStorage.getItem(STORAGE_KEYS.settings) || 'null');
-      if (s) state.settings = Object.assign(state.settings, s);
-    } catch (e) {}
-    if (!Array.isArray(state.batches)) state.batches = [];
     if (!Array.isArray(state.cart)) state.cart = [];
-    if (!Array.isArray(state.transactions)) state.transactions = [];
-    if (!Array.isArray(state.products)) state.products = [];
-    seedDummyCatalog();
+    try {
+      var ui = JSON.parse(localStorage.getItem(STORAGE_KEYS.ui) || 'null');
+      if (ui && typeof ui === 'object') {
+        state.ui.theme = ui.theme === 'dark' ? 'dark' : 'light';
+        state.ui.brand = ui.brand || 'hijau';
+        state.ui.button = ui.button || 'emerald';
+        state.ui.text = ui.text === 'kecil' || ui.text === 'besar' ? ui.text : 'sedang';
+        state.ui.brandHex = normalizeHex(ui.brandHex) || hexFromBrand(state.ui.brand);
+        state.ui.buttonHex = normalizeHex(ui.buttonHex) || hexFromButton(state.ui.button);
+      }
+    } catch (e) {}
   }
 
-  /* Isi 6 produk dummy agar kartu Kasir langsung tampil saat stok kosong */
-  function dummyCatalog() {
-    return [
-      { name: 'Indomie Goreng', stock: 20, price: 3500, location: 'A-01', expiredDate: '2026-12-31', category: 'Makanan' },
-      { name: 'Aqua 600ml', stock: 15, price: 3000, location: 'B-02', expiredDate: '2026-10-20', category: 'Minuman' },
-      { name: 'Minyak Goreng', stock: 10, price: 18000, location: 'A-03', expiredDate: '2026-10-10', category: 'Sembako' },
-      { name: 'Gula 1kg', stock: 8, price: 17000, location: 'A-04', expiredDate: '2026-10-07', category: 'Sembako' },
-      { name: 'Susu UHT', stock: 12, price: 8000, location: 'C-01', expiredDate: '2026-11-15', category: 'Minuman' },
-      { name: 'Teh Botol', stock: 18, price: 4000, location: 'B-05', expiredDate: '2026-10-25', category: 'Minuman' }
-    ];
+  function saveUiPrefs() {
+    try { localStorage.setItem(STORAGE_KEYS.ui, JSON.stringify(state.ui)); } catch (e) {}
   }
 
-  function seedDummyCatalog() {
-    var demo = dummyCatalog();
-    if (!state.batches.length) {
-      state.batches = demo.map(function (p, i) {
-        return {
-          id: 'B-DEMO-' + (i + 1),
-          name: p.name,
-          stock: p.stock,
-          price: p.price,
-          location: p.location,
-          expiredDate: p.expiredDate,
-          createdAt: '2026-09-01T00:00:00.000Z'
-        };
-      });
+  function normalizeHex(value) {
+    if (!value || typeof value !== 'string') return '';
+    var hex = value.trim().toUpperCase();
+    if (hex.charAt(0) !== '#') hex = '#' + hex;
+    if (/^#[0-9A-F]{6}$/.test(hex)) return hex;
+    if (/^#[0-9A-F]{3}$/.test(hex)) {
+      return '#' + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2) + hex.charAt(3) + hex.charAt(3);
     }
-    if (!state.products.length) {
-      state.products = demo.map(function (p, i) {
-        return {
-          id: 'P-DEMO-' + (i + 1),
-          sku: 'SKU-' + (1001 + i),
-          name: p.name,
-          category: p.category,
-          sellPrice: p.price,
-          buyPrice: Math.round(p.price * 0.8),
-          minStock: 5,
-          unit: 'pcs',
-          location: p.location
-        };
-      });
-    }
-    saveState();
+    return '';
   }
 
-  /* Simpan seluruh state ke LocalStorage agar data persisten */
-  function saveState() {
-    localStorage.setItem(STORAGE_KEYS.batches, JSON.stringify(state.batches));
+  function hexFromBrand(id) {
+    var found = UI_BRANDS.filter(function (c) { return c.id === id; })[0];
+    return found ? found.hex : '#005A36';
+  }
+
+  function hexFromButton(id) {
+    var found = UI_BUTTONS.filter(function (c) { return c.id === id; })[0];
+    return found ? found.hex : '#059669';
+  }
+
+  /* Simpan keranjang per perangkat; data bisnis disimpan di database server */
+  function saveCart() {
     localStorage.setItem(STORAGE_KEYS.cart, JSON.stringify(state.cart));
-    localStorage.setItem(STORAGE_KEYS.transactions, JSON.stringify(state.transactions));
-    localStorage.setItem(STORAGE_KEYS.products, JSON.stringify(state.products));
-    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(state.settings));
+  }
+
+  /* Panggil Apps Script (Google Sheets) dengan JSON plain text agar tidak kena preflight CORS */
+  function sheetsPost(url, payload) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload || {})
+    }).then(function (res) {
+      return res.text().then(function (text) {
+        var body = {};
+        try { body = text ? JSON.parse(text) : {}; } catch (e) { throw new Error('Respons database tidak valid'); }
+        if (!res.ok) throw new Error(body.error || body.message || ('Permintaan gagal (' + res.status + ')'));
+        return body;
+      });
+    });
+  }
+
+  function sheetsGet(url, params) {
+    var qs = [];
+    Object.keys(params || {}).forEach(function (k) {
+      if (params[k] === undefined || params[k] === null || params[k] === '') return;
+      qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+    });
+    return fetch(url + (qs.length ? '?' + qs.join('&') : '')).then(function (res) {
+      return res.text().then(function (text) {
+        var body = {};
+        try { body = text ? JSON.parse(text) : {}; } catch (e) { throw new Error('Respons database tidak valid'); }
+        if (!res.ok) throw new Error(body.error || body.message || ('Permintaan gagal (' + res.status + ')'));
+        return body;
+      });
+    });
+  }
+
+  function assertOk(body) {
+    if (body && (body.ok === false || body.status === 'error')) {
+      throw new Error(body.error || body.message || 'Permintaan gagal');
+    }
+    return body;
+  }
+
+  function mapProduct(p) {
+    return {
+      id: String(p.id || ''),
+      sku: p.sku || '',
+      name: p.name || '',
+      category: p.category || 'Umum',
+      sellPrice: Number(p.price != null ? p.price : p.sell_price) || 0,
+      buyPrice: Number(p.buy_price) || 0,
+      minStock: Number(p.min_stock != null ? p.min_stock : 5) || 5,
+      unit: p.unit || 'pcs',
+      location: p.location || '',
+      stock: Number(p.stock) || 0
+    };
+  }
+
+  function mapBatch(b, products) {
+    var list = products || state.products;
+    var product = list.find(function (p) { return String(p.id) === String(b.product_id); });
+    return {
+      id: String(b.id || ''),
+      productId: String(b.product_id || ''),
+      name: product ? product.name : (b.name || b.product_id || ''),
+      stock: Number(b.qty != null ? b.qty : b.stock) || 0,
+      price: product ? product.sellPrice : (Number(b.price) || 0),
+      location: b.location || (product ? product.location : '') || '-',
+      expiredDate: String(b.expired_date || b.expiredDate || '').slice(0, 10),
+      createdAt: b.created_at || b.createdAt || ''
+    };
+  }
+
+  function mapTransaction(t) {
+    var method = String(t.payment_method || t.payMethod || t.pay_method || 'tunai').toLowerCase();
+    if (method === 'cash') method = 'tunai';
+    var at = t.created_at || t.at || '';
+    if (t.date && String(t.date).length >= 10) {
+      var timePart = t.time && String(t.time).indexOf('T') === -1 ? String(t.time) : '00:00:00';
+      if (String(t.time || '').indexOf('T') !== -1) timePart = new Date(t.time).toTimeString().slice(0, 8);
+      at = String(t.date).slice(0, 10) + 'T' + timePart;
+    }
+    return {
+      id: String(t.invoice_no || t.id || ''),
+      at: at,
+      cashier: t.cashier || (state.user && state.user.username) || state.settings.cashierName || 'Kasir',
+      payMethod: method,
+      paid: Number(t.paid) || 0,
+      change: Number(t.change_amount != null ? t.change_amount : t.change) || 0,
+      discount: Number(t.discount) || 0,
+      tax: Number(t.tax) || 0,
+      subtotal: Number(t.subtotal) || 0,
+      total: Number(t.total) || 0,
+      lines: Array.isArray(t.lines) ? t.lines : (Array.isArray(t.items) ? t.items : [])
+    };
+  }
+
+  function applyRemoteState(data) {
+    state.products = (Array.isArray(data.products) ? data.products : []).map(mapProduct);
+    state.batches = (Array.isArray(data.batches) ? data.batches : []).map(function (b) { return mapBatch(b, state.products); });
+    state.transactions = (Array.isArray(data.transactions) ? data.transactions : []).map(mapTransaction);
+    var raw = data.settings || {};
+    state.settings = {
+      storeName: raw.storeName || raw.store_name || 'UMKM Kasir',
+      cashierName: raw.cashierName || raw.cashier_name || (state.user && state.user.username) || 'Kasir',
+      taxPercent: Number(raw.taxPercent != null ? raw.taxPercent : raw.tax_percent) || 0,
+      address: raw.address || '',
+      phone: raw.phone || ''
+    };
+    pruneCart();
+    renderCurrentPage();
+  }
+
+  /* Ambil seluruh data bisnis dari Google Sheets lalu render ulang halaman aktif */
+  function syncState() {
+    return sheetsGet(API_FITUR, { action: 'state' }).then(function (data) {
+      assertOk(data);
+      applyRemoteState(data);
+    });
+  }
+
+  /* Sesuaikan keranjang dengan stok terbaru dari server */
+  function pruneCart() {
+    var next = [];
+    state.cart.forEach(function (item) {
+      var max = availableStock(item.name);
+      if (max <= 0) return;
+      next.push({
+        name: item.name,
+        qty: Math.min(item.qty, max),
+        price: item.price
+      });
+    });
+    var changed = next.length !== state.cart.length || next.some(function (item, i) {
+      return item.qty !== state.cart[i].qty;
+    });
+    state.cart = next;
+    if (changed) saveCart();
+  }
+
+  /* Render ulang seluruh area yang bergantung pada data server */
+  function renderCurrentPage() {
+    renderKasir();
+    renderCart();
+    updateNotifBadge(countNearExpiry());
+    if (state.page === 'dashboard') renderDashboard();
+    if (state.page === 'stok') renderStok();
+    if (state.page === 'expired') renderExpired();
+    if (state.page === 'riwayat') renderRiwayat();
+    if (state.page === 'laporan') renderLaporan();
+    if (state.page === 'pengaturan') renderSettingsForm();
   }
 
   /* Format angka ke Rupiah tanpa desimal */
@@ -257,31 +403,9 @@
       item.qty = next;
       item.price = product.price;
     }
-    saveState();
+    saveCart();
     renderKasir();
     renderCart();
-  }
-
-  /* Kurangi stok dari batch expired paling awal (inti FIFO/FEFO) */
-  function consumeFifo(productName, qty) {
-    var batches = fifoBatches(productName);
-    var remain = qty;
-    var used = [];
-    for (var i = 0; i < batches.length && remain > 0; i++) {
-      var take = Math.min(Number(batches[i].stock), remain);
-      batches[i].stock = Number(batches[i].stock) - take;
-      remain -= take;
-      used.push({
-        batchId: batches[i].id,
-        name: batches[i].name,
-        qty: take,
-        expiredDate: batches[i].expiredDate,
-        location: batches[i].location,
-        price: Number(batches[i].price) || 0
-      });
-    }
-    if (remain > 0) return { ok: false, used: used, remain: remain };
-    return { ok: true, used: used, remain: 0 };
   }
 
   function cartSubtotal() {
@@ -316,55 +440,67 @@
     return cartPaid() - cartTotal();
   }
 
-  /* Checkout keranjang: validasi stok, bayar, lalu catat transaksi FIFO */
+  /* Cari ID produk dari nama di keranjang */
+  function productIdByName(name) {
+    var found = findProductByName(name);
+    return found ? found.id : '';
+  }
+
+  /* Checkout ke Google Sheets: kurangi stok dan catat transaksi */
   function checkout() {
     if (!state.cart.length) return showToast('Keranjang kosong');
-    var i;
-    for (i = 0; i < state.cart.length; i++) {
-      var c = state.cart[i];
-      if (availableStock(c.name) < c.qty) {
-        return showToast('Stok ' + c.name + ' tidak cukup');
-      }
-    }
     var total = cartTotal();
-    var paid = cartPaid();
-    if (state.payMethod === 'tunai' && paid < total) {
+    if (state.payMethod === 'tunai' && cartPaid() < total) {
       return showToast('Uang diterima kurang');
     }
-    if (state.payMethod !== 'tunai') paid = total;
-    var lines = [];
-    state.cart.forEach(function (item) {
-      var result = consumeFifo(item.name, item.qty);
-      result.used.forEach(function (u) {
-        u.price = item.price;
-        lines.push(u);
-      });
+    var btn = document.getElementById('btn-checkout');
+    if (btn) btn.disabled = true;
+    var items = [];
+    var missing = '';
+    state.cart.forEach(function (c) {
+      var pid = productIdByName(c.name);
+      if (!pid) missing = c.name;
+      items.push({ product_id: pid, qty: c.qty, name: c.name, price: c.price });
     });
-    var trx = {
-      id: 'TRX-' + Date.now(),
-      at: new Date().toISOString(),
-      cashier: state.settings.cashierName || 'Kasir',
-      payMethod: state.payMethod,
-      paid: paid,
-      change: Math.max(0, paid - total),
+    if (missing) {
+      if (btn) btn.disabled = false;
+      return showToast('Produk ' + missing + ' belum ada di database');
+    }
+    sheetsPost(API_FITUR, {
+      action: 'checkout',
+      items: items,
       discount: cartDiscount(),
-      tax: cartTax(),
-      subtotal: cartSubtotal(),
-      lines: lines,
-      total: total
-    };
-    state.transactions.unshift(trx);
-    state.cart = [];
-    state.lastTrx = trx;
-    var discEl = document.getElementById('cart-discount');
-    var paidEl = document.getElementById('cart-paid');
-    if (discEl) discEl.value = '0';
-    if (paidEl) paidEl.value = '0';
-    saveState();
-    closeCart();
-    renderKasir();
-    renderCart();
-    showSuccess(trx);
+      pay_method: state.payMethod,
+      payMethod: state.payMethod,
+      paid: cartPaid(),
+      cashier: (state.user && state.user.username) || state.settings.cashierName || 'Kasir'
+    }).then(function (body) {
+      assertOk(body);
+      var trx = mapTransaction(body.transaction || body);
+      if (!trx.lines.length) {
+        trx.lines = state.cart.map(function (c) {
+          return { name: c.name, qty: c.qty, price: c.price };
+        });
+      }
+      if (!trx.subtotal) trx.subtotal = cartSubtotal();
+      if (!trx.total) trx.total = cartTotal();
+      if (!trx.discount) trx.discount = cartDiscount();
+      if (!trx.tax) trx.tax = cartTax();
+      state.cart = [];
+      state.lastTrx = trx;
+      saveCart();
+      var discEl = document.getElementById('cart-discount');
+      var paidEl = document.getElementById('cart-paid');
+      if (discEl) discEl.value = '0';
+      if (paidEl) paidEl.value = '0';
+      closeCart();
+      showSuccess(trx);
+      return syncState();
+    }).catch(function (err) {
+      showToast(err.message || 'Checkout gagal');
+    }).then(function () {
+      if (btn) btn.disabled = false;
+    });
   }
 
   function showSuccess(trx) {
@@ -422,14 +558,17 @@
     });
     document.querySelectorAll('.nav-btn').forEach(function (btn) {
       var active = btn.getAttribute('data-page') === page;
-      btn.classList.toggle('text-emerald-700', active);
-      btn.classList.toggle('text-white', false);
-      btn.classList.toggle('bg-emerald-700', false);
-      btn.classList.toggle('text-slate-400', !active);
       if (btn.closest('#side-nav')) {
-        btn.classList.toggle('bg-emerald-700', active);
-        btn.classList.toggle('text-white', active);
+        btn.classList.toggle('bg-emerald-100', active);
+        btn.classList.toggle('text-emerald-800', active);
+        btn.classList.toggle('font-semibold', active);
         btn.classList.toggle('text-emerald-100', !active);
+      } else {
+        btn.classList.toggle('text-emerald-700', active);
+        btn.classList.toggle('text-slate-400', !active);
+        if (active && btn.closest('#bottom-nav')) {
+          btn.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+        }
       }
     });
     var sub = document.getElementById('header-sub');
@@ -438,21 +577,39 @@
       renderKasir();
       renderCart();
     }
+    if (page === 'dashboard') {
+      renderDashboard();
+    }
+    if (page === 'stok') {
+      renderStok();
+    }
+    if (page === 'expired') {
+      renderExpired();
+    }
+    if (page === 'riwayat') {
+      renderRiwayat();
+    }
+    if (page === 'laporan') {
+      renderLaporan();
+    }
+    if (page === 'pengaturan') {
+      renderSettingsForm();
+    }
+    paintUiColors(brandHex(), buttonHex());
   }
 
   function renderNav() {
     var side = document.getElementById('side-nav');
     var bottom = document.getElementById('bottom-nav');
-    var mobileItems = PAGES.slice(0, 4);
     if (side) {
       side.innerHTML = PAGES.map(function (p) {
         return '<button data-page="' + p.id + '" class="nav-btn w-full text-left px-3 py-2 rounded-xl text-emerald-100" type="button">' + p.label + '</button>';
       }).join('');
     }
     if (bottom) {
-      bottom.className = 'bg-white rounded-2xl card-shadow border border-emerald-100 grid grid-cols-4 overflow-hidden py-1';
-      bottom.innerHTML = mobileItems.map(function (p) {
-        return '<button data-page="' + p.id + '" class="nav-btn text-[11px] font-semibold text-slate-400 py-2" type="button">' + p.label + '</button>';
+      bottom.className = 'bg-white rounded-2xl card-shadow border border-emerald-100 flex gap-1 overflow-x-auto no-scrollbar py-1 px-1 snap-x snap-mandatory';
+      bottom.innerHTML = PAGES.map(function (p) {
+        return '<button data-page="' + p.id + '" class="nav-btn shrink-0 min-w-[4.75rem] px-3 text-[11px] font-semibold text-slate-400 py-2 snap-start" type="button">' + p.label + '</button>';
       }).join('');
     }
     document.querySelectorAll('.nav-btn').forEach(function (btn) {
@@ -497,6 +654,924 @@
           '</div>' +
         '</article>'
       );
+    }).join('');
+  }
+
+  /* Render halaman Stok: ringkasan dan daftar batch per produk */
+  function renderStok() {
+    var wrap = document.getElementById('stok-list');
+    if (!wrap) return;
+    var searchEl = document.getElementById('search-stok');
+    var q = searchEl ? searchEl.value.trim().toLowerCase() : '';
+
+    var groups = {};
+    state.batches.forEach(function (b) {
+      var key = productKey(b.name);
+      if (!groups[key]) {
+        groups[key] = { name: b.name, category: categoryOf(b.name), stock: 0, value: 0, batches: [] };
+      }
+      groups[key].stock += Number(b.stock) || 0;
+      groups[key].value += (Number(b.stock) || 0) * (Number(b.price) || 0);
+      groups[key].batches.push(b);
+    });
+    var allGroups = Object.keys(groups).map(function (k) { return groups[k]; });
+    var totalStock = 0;
+    state.batches.forEach(function (b) { totalStock += Number(b.stock) || 0; });
+
+    var summary =
+      '<div class="grid grid-cols-3 gap-2 mb-3">' +
+        '<div class="bg-white rounded-2xl p-3 card-shadow">' +
+          '<p class="text-[11px] text-slate-500">Jenis Produk</p>' +
+          '<p class="text-lg font-bold text-emerald-700">' + allGroups.length + '</p>' +
+        '</div>' +
+        '<div class="bg-white rounded-2xl p-3 card-shadow">' +
+          '<p class="text-[11px] text-slate-500">Total Batch</p>' +
+          '<p class="text-lg font-bold text-emerald-700">' + state.batches.length + '</p>' +
+        '</div>' +
+        '<div class="bg-white rounded-2xl p-3 card-shadow">' +
+          '<p class="text-[11px] text-slate-500">Total Stok</p>' +
+          '<p class="text-lg font-bold text-emerald-700">' + totalStock + '</p>' +
+        '</div>' +
+      '</div>';
+
+    if (!state.batches.length) {
+      wrap.innerHTML = '<p class="text-sm text-slate-400 py-10 text-center">Belum ada batch stok. Tambahkan melalui form di atas.</p>';
+      return;
+    }
+
+    var list = allGroups;
+    if (q) {
+      list = list.filter(function (g) { return g.name.toLowerCase().indexOf(q) !== -1; });
+    }
+    list.sort(function (a, b) { return a.name.localeCompare(b.name); });
+
+    if (!list.length) {
+      wrap.innerHTML = summary + '<p class="text-sm text-slate-400 py-10 text-center">Tidak ada produk yang cocok dengan pencarian.</p>';
+      return;
+    }
+
+    var cards = list.map(function (g) {
+      var prod = findProductByName(g.name);
+      var min = prod && prod.minStock != null ? Number(prod.minStock) : 5;
+      var low = g.stock <= min;
+      var batches = g.batches.slice().sort(function (a, b) {
+        return String(a.expiredDate || '').localeCompare(String(b.expiredDate || ''));
+      });
+      var rows = batches.map(function (b) {
+        var st = expiryStatus(b.expiredDate);
+        return '<div class="flex items-center justify-between gap-2 bg-slate-50 rounded-xl px-2 py-1.5">' +
+          '<div class="min-w-0">' +
+            '<p class="text-xs font-semibold">' + escapeHtml(b.id) + '</p>' +
+            '<p class="text-[10px] text-slate-400">Rak ' + escapeHtml(b.location || '-') + ' · ' + formatRupiah(b.price) + '</p>' +
+          '</div>' +
+          '<div class="flex items-center gap-2 shrink-0">' +
+            '<span class="text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap ' + st.cls + '">' + st.label + '</span>' +
+            '<span class="text-xs font-semibold w-10 text-right">' + (Number(b.stock) || 0) + '</span>' +
+            '<button type="button" class="h-7 px-2 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-semibold" data-edit-batch="' + escapeAttr(b.id) + '" aria-label="Edit batch">Edit</button>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+      return '<article class="bg-white rounded-2xl p-4 card-shadow">' +
+        '<div class="flex items-start justify-between gap-2 mb-2">' +
+          '<div class="min-w-0">' +
+            '<h3 class="font-bold text-sm truncate">' + escapeHtml(g.name) + '</h3>' +
+            '<p class="text-[11px] text-slate-400">' + escapeHtml(g.category) + ' · min ' + min + ' ' + (low ? '· <span class="text-rose-600 font-semibold">menipis</span>' : '') + '</p>' +
+          '</div>' +
+          '<div class="text-right shrink-0">' +
+            '<p class="text-sm font-bold ' + (low ? 'text-rose-600' : 'text-emerald-700') + '">' + g.stock + ' pcs</p>' +
+            '<p class="text-[10px] text-slate-400">' + formatRupiah(g.value) + '</p>' +
+          '</div>' +
+        '</div>' +
+        '<div class="space-y-2">' + rows + '</div>' +
+      '</article>';
+    }).join('');
+
+    wrap.innerHTML = summary + '<div class="space-y-3">' + cards + '</div>';
+  }
+
+  function closeModal() {
+    var overlay = document.getElementById('modal-overlay');
+    if (overlay) overlay.classList.add('hidden');
+  }
+
+  function openModal(title, html) {
+    var overlay = document.getElementById('modal-overlay');
+    var titleEl = document.getElementById('modal-title');
+    var body = document.getElementById('modal-body');
+    if (titleEl) titleEl.textContent = title;
+    if (body) body.innerHTML = html;
+    if (overlay) overlay.classList.remove('hidden');
+    paintUiColors(brandHex(), buttonHex());
+  }
+
+  function openEditBatch(batchId) {
+    var batch = state.batches.filter(function (b) { return String(b.id) === String(batchId); })[0];
+    if (!batch) return showToast('Batch tidak ditemukan');
+    openModal('Edit Stok',
+      '<form id="form-edit-batch" data-batch-id="' + escapeAttr(batch.id) + '" class="space-y-3">' +
+        '<p class="text-sm font-semibold">' + escapeHtml(batch.name) + '</p>' +
+        '<p class="text-[11px] text-slate-400">Batch ' + escapeHtml(batch.id) + '</p>' +
+        '<label class="block text-xs text-slate-500">Stok</label>' +
+        '<div class="flex items-center gap-2">' +
+          '<button type="button" id="edit-stock-minus" class="w-11 h-11 rounded-xl border border-slate-200 text-lg font-bold">-</button>' +
+          '<input id="edit-stock" name="stock" type="number" min="0" value="' + (Number(batch.stock) || 0) + '" class="flex-1 h-11 px-3 rounded-xl border border-slate-200 text-center text-sm font-semibold" />' +
+          '<button type="button" id="edit-stock-plus" class="w-11 h-11 rounded-xl bg-emerald-600 text-white text-lg font-bold">+</button>' +
+        '</div>' +
+        '<label class="block text-xs text-slate-500">Lokasi rak</label>' +
+        '<input name="location" required value="' + escapeAttr(batch.location === '-' ? '' : (batch.location || '')) + '" placeholder="Contoh: A-12" class="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm" />' +
+        '<label class="block text-xs text-slate-500">Tanggal expired</label>' +
+        '<input name="expiredDate" type="date" required value="' + escapeAttr(batch.expiredDate || '') + '" class="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm" />' +
+        '<button type="submit" class="w-full h-11 rounded-xl bg-emerald-600 text-white font-semibold">Simpan Perubahan</button>' +
+      '</form>'
+    );
+    var stockInput = document.getElementById('edit-stock');
+    var minus = document.getElementById('edit-stock-minus');
+    var plus = document.getElementById('edit-stock-plus');
+    function bump(delta) {
+      if (!stockInput) return;
+      var n = parseInt(stockInput.value, 10);
+      if (isNaN(n)) n = 0;
+      stockInput.value = Math.max(0, n + delta);
+    }
+    if (minus) minus.addEventListener('click', function () { bump(-1); });
+    if (plus) plus.addEventListener('click', function () { bump(1); });
+    var form = document.getElementById('form-edit-batch');
+    if (form) form.addEventListener('submit', handleSaveEditBatch);
+  }
+
+  function handleSaveEditBatch(event) {
+    event.preventDefault();
+    var form = event.target;
+    var batchId = form.getAttribute('data-batch-id');
+    var stock = parseInt(formField(form, 'stock').value, 10);
+    var location = formField(form, 'location').value.trim();
+    var expiredDate = formField(form, 'expiredDate').value;
+    if (!batchId || !location || !expiredDate || isNaN(stock) || stock < 0) {
+      return showToast('Lengkapi stok, rak, dan tanggal expired');
+    }
+    var batch = state.batches.filter(function (b) { return String(b.id) === String(batchId); })[0];
+    if (!batch) return showToast('Batch tidak ditemukan');
+    batch.stock = stock;
+    batch.location = location;
+    batch.expiredDate = expiredDate;
+    var submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+    var payload = buildBackupPayload();
+    payload.action = 'restore';
+    sheetsPost(API_FITUR, payload)
+      .then(function (body) {
+        assertOk(body);
+        closeModal();
+        showToast('Stok diperbarui');
+        return syncState();
+      })
+      .catch(function (err) { showToast(err.message || 'Gagal menyimpan stok'); })
+      .then(function () { if (submitBtn) submitBtn.disabled = false; });
+  }
+
+  /* Render daftar batch yang mendekati atau sudah melewati kedaluwarsa */
+  function renderExpired() {
+    var filtersEl = document.getElementById('expired-filters');
+    var listEl = document.getElementById('expired-list');
+    if (!listEl) return;
+    var filters = [
+      { id: 'semua', label: 'Semua' },
+      { id: 'h7', label: 'H-7' },
+      { id: 'h3', label: 'H-3' },
+      { id: 'today', label: 'Hari ini' },
+      { id: 'expired', label: 'Lewat' }
+    ];
+    if (filtersEl) {
+      filtersEl.innerHTML = filters.map(function (f) {
+        var active = f.id === state.expiredFilter;
+        return '<button type="button" data-exp-filter="' + f.id + '" class="shrink-0 h-8 px-3 rounded-full text-xs font-semibold ' +
+          (active ? 'bg-emerald-600 text-white' : 'bg-white text-slate-500 border border-emerald-100') + '">' + f.label + '</button>';
+      }).join('');
+    }
+
+    var items = state.batches.filter(function (b) { return Number(b.stock) > 0; })
+      .map(function (b) { return { b: b, d: daysUntil(b.expiredDate) }; });
+
+    if (state.expiredFilter === 'h7') items = items.filter(function (x) { return x.d <= 7; });
+    else if (state.expiredFilter === 'h3') items = items.filter(function (x) { return x.d <= 3; });
+    else if (state.expiredFilter === 'today') items = items.filter(function (x) { return x.d === 0; });
+    else if (state.expiredFilter === 'expired') items = items.filter(function (x) { return x.d < 0; });
+
+    items.sort(function (a, b) { return a.d - b.d; });
+
+    if (!items.length) {
+      listEl.innerHTML = '<p class="text-sm text-slate-400 py-10 text-center">Tidak ada batch pada filter ini.</p>';
+      return;
+    }
+
+    listEl.innerHTML = items.map(function (x) {
+      var st = expiryStatus(x.b.expiredDate);
+      return '<article class="bg-white rounded-2xl p-3 card-shadow flex items-center justify-between gap-3">' +
+        '<div class="min-w-0">' +
+          '<p class="font-semibold text-sm truncate">' + escapeHtml(x.b.name) + '</p>' +
+          '<p class="text-[11px] text-slate-400">' + escapeHtml(x.b.id) + ' · Rak ' + escapeHtml(x.b.location || '-') + '</p>' +
+          '<p class="text-[11px] text-slate-500">Expired ' + escapeHtml(x.b.expiredDate || '-') + ' · stok ' + x.b.stock + '</p>' +
+        '</div>' +
+        '<span class="text-[11px] px-2 py-1 rounded-full whitespace-nowrap ' + st.cls + '">' + st.label + '</span>' +
+      '</article>';
+    }).join('');
+  }
+
+  /* Render riwayat transaksi dari server */
+  function renderRiwayat() {
+    var listEl = document.getElementById('riwayat-list');
+    if (!listEl) return;
+    var searchEl = document.getElementById('search-riwayat');
+    var q = searchEl ? searchEl.value.trim().toLowerCase() : '';
+    var list = state.transactions;
+    if (q) {
+      list = list.filter(function (t) { return String(t.id).toLowerCase().indexOf(q) !== -1; });
+    }
+    if (!list.length) {
+      listEl.innerHTML = '<p class="text-sm text-slate-400 py-10 text-center">Belum ada transaksi.</p>';
+      return;
+    }
+    listEl.innerHTML = list.map(function (t) {
+      var itemCount = (t.lines || []).reduce(function (s, l) { return s + Number(l.qty || 0); }, 0);
+      return '<article class="bg-white rounded-2xl p-3 card-shadow">' +
+        '<div class="flex items-start justify-between gap-2">' +
+          '<div class="min-w-0">' +
+            '<p class="font-semibold text-sm truncate">' + escapeHtml(t.id) + '</p>' +
+            '<p class="text-[11px] text-slate-400">' + new Date(t.at).toLocaleString('id-ID') + '</p>' +
+            '<p class="text-[11px] text-slate-500">' + escapeHtml(t.cashier || '-') + ' · ' + escapeHtml(String(t.payMethod || '-').toUpperCase()) + ' · ' + itemCount + ' item</p>' +
+          '</div>' +
+          '<p class="text-sm font-bold text-emerald-700 whitespace-nowrap">' + formatRupiah(t.total) + '</p>' +
+        '</div>' +
+      '</article>';
+    }).join('');
+  }
+
+  /* Rentang tanggal laporan berdasarkan periode terpilih */
+  function laporanRange() {
+    if (state.laporanFrom || state.laporanTo) {
+      return { from: state.laporanFrom, to: state.laporanTo };
+    }
+    if (state.laporanPeriod === 'all') return { from: '', to: '' };
+    var end = new Date();
+    var start = new Date();
+    if (state.laporanPeriod === '7') start.setDate(start.getDate() - 6);
+    else if (state.laporanPeriod === '30') start.setDate(start.getDate() - 29);
+    return { from: localDateKey(start), to: localDateKey(end) };
+  }
+
+  /* Transaksi yang masuk rentang tanggal laporan */
+  function filteredTransactions(from, to) {
+    return state.transactions.filter(function (t) {
+      var key = localDateKey(t.at);
+      if (from && key < from) return false;
+      if (to && key > to) return false;
+      return true;
+    });
+  }
+
+  /* Render laporan omzet, ringkasan metode bayar, dan daftar transaksi */
+  function renderLaporan() {
+    var periodEl = document.getElementById('laporan-period');
+    var fromEl = document.getElementById('laporan-from');
+    var toEl = document.getElementById('laporan-to');
+    var range = laporanRange();
+
+    if (fromEl && document.activeElement !== fromEl) fromEl.value = range.from;
+    if (toEl && document.activeElement !== toEl) toEl.value = range.to;
+
+    if (periodEl) {
+      var periods = [
+        { id: 'today', label: 'Hari Ini' },
+        { id: '7', label: '7 Hari' },
+        { id: '30', label: '30 Hari' },
+        { id: 'all', label: 'Semua' }
+      ];
+      periodEl.innerHTML = periods.map(function (p) {
+        var active = p.id === state.laporanPeriod;
+        return '<button type="button" data-period="' + p.id + '" class="shrink-0 h-8 px-3 rounded-full text-xs font-semibold ' +
+          (active ? 'bg-emerald-600 text-white' : 'bg-white text-slate-500 border border-emerald-100') + '">' + p.label + '</button>';
+      }).join('');
+    }
+
+    var rows = filteredTransactions(range.from, range.to);
+    var omzet = rows.reduce(function (s, t) { return s + (Number(t.total) || 0); }, 0);
+    var omzetEl = document.getElementById('omzet');
+    var countEl = document.getElementById('trx-count');
+    if (omzetEl) omzetEl.textContent = formatRupiah(omzet);
+    if (countEl) countEl.textContent = rows.length + ' transaksi';
+
+    var byMethod = {};
+    rows.forEach(function (t) {
+      var key = t.payMethod || 'lainnya';
+      if (!byMethod[key]) byMethod[key] = { count: 0, total: 0 };
+      byMethod[key].count += 1;
+      byMethod[key].total += Number(t.total) || 0;
+    });
+    var summaryEl = document.getElementById('laporan-summary');
+    if (summaryEl) {
+      var keys = Object.keys(byMethod);
+      if (!keys.length) {
+        summaryEl.innerHTML = '<p class="text-sm text-slate-400 py-2">Belum ada transaksi pada periode ini.</p>';
+      } else {
+        summaryEl.innerHTML = '<div class="bg-white rounded-2xl p-3 card-shadow"><p class="text-[11px] text-slate-500 mb-2">Metode Bayar</p>' +
+          keys.map(function (k) {
+            return '<div class="flex items-center justify-between text-sm py-0.5">' +
+              '<span class="text-slate-600">' + escapeHtml(String(k).toUpperCase()) + ' · ' + byMethod[k].count + 'x</span>' +
+              '<span class="font-semibold text-emerald-700">' + formatRupiah(byMethod[k].total) + '</span>' +
+            '</div>';
+          }).join('') + '</div>';
+      }
+    }
+
+    var listEl = document.getElementById('laporan-list');
+    if (listEl) {
+      if (!rows.length) {
+        listEl.innerHTML = '<p class="text-sm text-slate-400 py-6 text-center">Tidak ada transaksi pada periode ini.</p>';
+      } else {
+        listEl.innerHTML = rows.slice(0, 50).map(function (t) {
+          return '<div class="bg-white rounded-2xl p-3 card-shadow flex items-center justify-between gap-2">' +
+            '<div class="min-w-0">' +
+              '<p class="text-xs font-semibold truncate">' + escapeHtml(t.id) + '</p>' +
+              '<p class="text-[10px] text-slate-400">' + new Date(t.at).toLocaleString('id-ID') + '</p>' +
+            '</div>' +
+            '<span class="text-xs font-bold text-emerald-700 whitespace-nowrap">' + formatRupiah(t.total) + '</span>' +
+          '</div>';
+        }).join('');
+      }
+    }
+  }
+
+  /* Isi form pengaturan dengan nilai toko saat ini */
+  function renderSettingsForm() {
+    var form = document.getElementById('form-settings');
+    if (!form) return;
+    var storeField = formField(form, 'storeName');
+    var cashierField = formField(form, 'cashierName');
+    var taxField = formField(form, 'taxPercent');
+    if (storeField) storeField.value = state.settings.storeName || '';
+    if (cashierField) cashierField.value = state.settings.cashierName || '';
+    if (taxField) taxField.value = state.settings.taxPercent || 0;
+    renderUiOptions();
+  }
+
+  function renderUiOptions() {
+    var brandHexNow = brandHex();
+    var btnHexNow = buttonHex();
+    var brandWrap = document.getElementById('ui-brand-options');
+    var btnWrap = document.getElementById('ui-btn-options');
+    if (brandWrap) {
+      brandWrap.innerHTML = UI_BRANDS.map(function (c) {
+        var on = brandHexNow.toUpperCase() === c.hex.toUpperCase();
+        return '<button type="button" data-brand="' + c.id + '" class="h-11 rounded-xl border ' +
+          (on ? 'border-slate-800 ring-2 ring-offset-1 ring-slate-400' : 'border-slate-200') +
+          '" style="background:' + c.hex + '" aria-label="Warna tampilan ' + c.id + '"></button>';
+      }).join('');
+    }
+    if (btnWrap) {
+      btnWrap.innerHTML = UI_BUTTONS.map(function (c) {
+        var on = btnHexNow.toUpperCase() === c.hex.toUpperCase();
+        return '<button type="button" data-button="' + c.id + '" class="h-11 rounded-xl border ' +
+          (on ? 'border-slate-800 ring-2 ring-offset-1 ring-slate-400' : 'border-slate-200') +
+          '" style="background:' + c.hex + '" aria-label="Warna tombol ' + c.id + '"></button>';
+      }).join('');
+    }
+    var brandPicker = document.getElementById('ui-brand-picker');
+    var brandSwatch = document.getElementById('ui-brand-swatch');
+    var brandHexInput = document.getElementById('ui-brand-hex');
+    if (brandPicker) brandPicker.value = brandHexNow.toLowerCase();
+    if (brandSwatch) brandSwatch.style.background = brandHexNow;
+    if (brandHexInput && document.activeElement !== brandHexInput) brandHexInput.value = brandHexNow;
+    var btnPicker = document.getElementById('ui-btn-picker');
+    var btnSwatch = document.getElementById('ui-btn-swatch');
+    var btnHexInput = document.getElementById('ui-btn-hex');
+    if (btnPicker) btnPicker.value = btnHexNow.toLowerCase();
+    if (btnSwatch) btnSwatch.style.background = btnHexNow;
+    if (btnHexInput && document.activeElement !== btnHexInput) btnHexInput.value = btnHexNow;
+    document.querySelectorAll('#ui-theme-options [data-theme]').forEach(function (btn) {
+      var on = btn.getAttribute('data-theme') === state.ui.theme;
+      btn.classList.toggle('bg-emerald-600', on);
+      btn.classList.toggle('text-white', on);
+      btn.classList.toggle('text-slate-600', !on);
+    });
+    document.querySelectorAll('#ui-text-options [data-text]').forEach(function (btn) {
+      var on = btn.getAttribute('data-text') === state.ui.text;
+      btn.classList.toggle('bg-emerald-600', on);
+      btn.classList.toggle('text-white', on);
+      btn.classList.toggle('text-slate-600', !on);
+    });
+  }
+
+  /* Simpan pengaturan toko ke Google Sheets */
+  function handleSaveSettings(event) {
+    event.preventDefault();
+    var form = event.target;
+    sheetsPost(API_FITUR, {
+      action: 'saveSettings',
+      store_name: formField(form, 'storeName').value.trim(),
+      storeName: formField(form, 'storeName').value.trim(),
+      cashier_name: formField(form, 'cashierName').value.trim(),
+      cashierName: formField(form, 'cashierName').value.trim(),
+      tax_percent: Number(formField(form, 'taxPercent').value) || 0,
+      taxPercent: Number(formField(form, 'taxPercent').value) || 0
+    }).then(function (body) {
+      assertOk(body);
+      showToast('Pengaturan disimpan');
+      return syncState();
+    }).catch(function (err) { showToast(err.message || 'Gagal menyimpan pengaturan'); });
+  }
+
+  /* Bentuk backup JSON yang dipahami endpoint restore */
+  function buildBackupPayload() {
+    return {
+      products: state.products.map(function (p) {
+        return {
+          id: p.id,
+          sku: p.sku,
+          name: p.name,
+          category: p.category,
+          unit: p.unit,
+          price: p.sellPrice,
+          sell_price: p.sellPrice,
+          buy_price: p.buyPrice,
+          min_stock: p.minStock,
+          location: p.location
+        };
+      }),
+      batches: state.batches.map(function (b) {
+        return {
+          id: b.id,
+          product_id: b.productId,
+          name: b.name,
+          qty: b.stock,
+          price: b.price,
+          location: b.location,
+          expired_date: b.expiredDate,
+          created_at: b.createdAt
+        };
+      }),
+      transactions: state.transactions,
+      settings: {
+        store_name: state.settings.storeName,
+        cashier_name: state.settings.cashierName,
+        tax_percent: state.settings.taxPercent,
+        address: state.settings.address || '',
+        phone: state.settings.phone || ''
+      }
+    };
+  }
+
+  /* Pulihkan data dari file backup JSON ke Google Sheets */
+  function handleRestoreFile(event) {
+    var input = event.target;
+    var file = input.files && input.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var payload;
+      try {
+        payload = JSON.parse(String(reader.result));
+      } catch (e) {
+        return showToast('File backup tidak valid');
+      }
+      payload.action = 'restore';
+      sheetsPost(API_FITUR, payload)
+        .then(function (body) {
+          assertOk(body);
+          showToast('Data berhasil dipulihkan');
+          return syncState();
+        })
+        .catch(function (err) { showToast(err.message || 'Gagal memulihkan data'); });
+    };
+    reader.readAsText(file);
+    input.value = '';
+  }
+
+  /* Reset seluruh data Sheets ke contoh awal */
+  function handleReset() {
+    if (!window.confirm('Hapus semua data dan kembalikan ke contoh awal?')) return;
+    var demo = {
+      action: 'restore',
+      products: [
+        { id: 'P1', sku: 'SKU-1001', name: 'Indomie Goreng', category: 'Makanan', unit: 'pcs', price: 3500, location: 'A-01', min_stock: 5 },
+        { id: 'P2', sku: 'SKU-1002', name: 'Aqua 600ml', category: 'Minuman', unit: 'pcs', price: 3000, location: 'B-02', min_stock: 5 },
+        { id: 'P3', sku: 'SKU-1003', name: 'Minyak Goreng', category: 'Sembako', unit: 'pcs', price: 18000, location: 'A-03', min_stock: 5 },
+        { id: 'P4', sku: 'SKU-1004', name: 'Gula 1kg', category: 'Sembako', unit: 'pcs', price: 17000, location: 'A-04', min_stock: 5 },
+        { id: 'P5', sku: 'SKU-1005', name: 'Susu UHT', category: 'Minuman', unit: 'pcs', price: 8000, location: 'C-01', min_stock: 5 },
+        { id: 'P6', sku: 'SKU-1006', name: 'Teh Botol', category: 'Minuman', unit: 'pcs', price: 4000, location: 'B-05', min_stock: 5 }
+      ],
+      batches: [
+        { id: 1, product_id: 'P1', qty: 20, expired_date: '2026-12-31', created_at: '2026-09-01T00:00:00.000Z' },
+        { id: 2, product_id: 'P2', qty: 15, expired_date: '2026-10-20', created_at: '2026-09-01T00:00:00.000Z' },
+        { id: 3, product_id: 'P3', qty: 10, expired_date: '2026-10-10', created_at: '2026-09-01T00:00:00.000Z' },
+        { id: 4, product_id: 'P4', qty: 8, expired_date: '2026-10-07', created_at: '2026-09-01T00:00:00.000Z' },
+        { id: 5, product_id: 'P5', qty: 12, expired_date: '2026-11-15', created_at: '2026-09-01T00:00:00.000Z' },
+        { id: 6, product_id: 'P6', qty: 18, expired_date: '2026-10-25', created_at: '2026-09-01T00:00:00.000Z' }
+      ],
+      transactions: [],
+      transaction_items: [],
+      settings: { store_name: 'UMKM Kasir', cashier_name: 'Kasir', tax_percent: 0, address: '', phone: '' }
+    };
+    sheetsPost(API_FITUR, demo)
+      .then(function (body) {
+        assertOk(body);
+        showToast('Data direset');
+        return syncState();
+      })
+      .catch(function (err) { showToast(err.message || 'Gagal reset data'); });
+  }
+
+  function laporanExportRows() {
+    var range = laporanRange();
+    var rows = filteredTransactions(range.from, range.to);
+    var header = ['ID', 'Tanggal', 'Kasir', 'Metode', 'Subtotal', 'Diskon', 'Pajak', 'Total', 'Dibayar', 'Kembalian'];
+    var data = rows.map(function (t) {
+      return [
+        t.id,
+        t.at ? new Date(t.at).toLocaleString('id-ID') : '',
+        t.cashier || '',
+        String(t.payMethod || '').toUpperCase(),
+        Number(t.subtotal) || 0,
+        Number(t.discount) || 0,
+        Number(t.tax) || 0,
+        Number(t.total) || 0,
+        Number(t.paid) || 0,
+        Number(t.change) || 0
+      ];
+    });
+    var omzet = rows.reduce(function (s, t) { return s + (Number(t.total) || 0); }, 0);
+    return { range: range, header: header, data: data, omzet: omzet, count: rows.length };
+  }
+
+  function triggerDownload(blob, filename) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  function xmlEscape(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function buildExcelXml(exportData) {
+    var store = xmlEscape(state.settings.storeName || 'UMKM Kasir');
+    var from = exportData.range.from || '-';
+    var to = exportData.range.to || '-';
+    var rowsXml = '';
+    function cell(val, type) {
+      var t = type || (typeof val === 'number' ? 'Number' : 'String');
+      return '<Cell><Data ss:Type="' + t + '">' + xmlEscape(val) + '</Data></Cell>';
+    }
+    rowsXml += '<Row>' + cell(store) + '</Row>';
+    rowsXml += '<Row>' + cell('Laporan Transaksi') + cell(from + ' s/d ' + to) + '</Row>';
+    rowsXml += '<Row>' + cell('Omzet') + cell(exportData.omzet, 'Number') + cell('Transaksi') + cell(exportData.count, 'Number') + '</Row>';
+    rowsXml += '<Row></Row>';
+    rowsXml += '<Row>' + exportData.header.map(function (h) { return cell(h); }).join('') + '</Row>';
+    exportData.data.forEach(function (row) {
+      rowsXml += '<Row>' + row.map(function (v, i) {
+        return i >= 4 ? cell(Number(v) || 0, 'Number') : cell(v);
+      }).join('') + '</Row>';
+    });
+    return '<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n' +
+      '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">' +
+      '<Worksheet ss:Name="Laporan"><Table>' + rowsXml + '</Table></Worksheet></Workbook>';
+  }
+
+  function pdfSafe(str) {
+    return String(str == null ? '' : str)
+      .replace(/[^\x20-\x7E]/g, ' ')
+      .replace(/\\/g, '\\\\')
+      .replace(/\(/g, '\\(')
+      .replace(/\)/g, '\\)');
+  }
+
+  function buildPdf(exportData) {
+    var pageW = 842;
+    var pageH = 595;
+    var margin = 28;
+    var rowH = 16;
+    var headerH = 72;
+    var colW = [88, 118, 70, 52, 70, 62, 62, 70, 70, 70];
+    var maxRows = Math.floor((pageH - headerH - margin) / rowH);
+    var pages = [];
+    var i = 0;
+    if (!exportData.data.length) pages.push([]);
+    while (i < exportData.data.length || !pages.length) {
+      pages.push(exportData.data.slice(i, i + maxRows));
+      i += maxRows;
+      if (!exportData.data.length) break;
+    }
+    var objects = [];
+    objects.push('<< /Type /Catalog /Pages 2 0 R >>');
+    var pageIds = [];
+    var fontId;
+    var contents = [];
+    pages.forEach(function (chunk, p) {
+      var y = pageH - margin;
+      var s = 'BT\n/F1 12 Tf\n';
+      function line(text, x, yy, size) {
+        s += '/F1 ' + (size || 9) + ' Tf\n1 0 0 1 ' + x + ' ' + yy + ' Tm\n(' + pdfSafe(text) + ') Tj\n';
+      }
+      line((state.settings.storeName || 'UMKM Kasir') + ' - Laporan Transaksi', margin, y, 12);
+      y -= 16;
+      line('Periode: ' + (exportData.range.from || '-') + ' s/d ' + (exportData.range.to || '-') +
+        ' | Omzet: ' + formatRupiah(exportData.omzet) + ' | ' + exportData.count + ' transaksi | Hal ' + (p + 1) + '/' + pages.length, margin, y, 8);
+      y -= 20;
+      var x = margin;
+      exportData.header.forEach(function (h, ci) {
+        line(h, x, y, 8);
+        x += colW[ci];
+      });
+      y -= rowH;
+      chunk.forEach(function (row) {
+        x = margin;
+        row.forEach(function (v, ci) {
+          var txt = ci >= 4 ? formatRupiah(v) : v;
+          line(txt, x, y, 8);
+          x += colW[ci];
+        });
+        y -= rowH;
+      });
+      s += 'ET';
+      contents.push(s);
+    });
+    fontId = 3 + pages.length * 2;
+    var kids = [];
+    pages.forEach(function (_, p) {
+      var pageObj = 3 + p * 2;
+      var contentObj = 4 + p * 2;
+      kids.push(pageObj + ' 0 R');
+      objects[pageObj - 1] = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + pageW + ' ' + pageH + '] /Contents ' + contentObj + ' 0 R /Resources << /Font << /F1 ' + fontId + ' 0 R >> >> >>';
+      objects[contentObj - 1] = '<< /Length ' + contents[p].length + ' >>\nstream\n' + contents[p] + '\nendstream';
+    });
+    objects[1] = '<< /Type /Pages /Kids [' + kids.join(' ') + '] /Count ' + pages.length + ' >>';
+    objects[fontId - 1] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
+    var out = '%PDF-1.4\n';
+    var offsets = [0];
+    objects.forEach(function (body, idx) {
+      offsets[idx + 1] = out.length;
+      out += (idx + 1) + ' 0 obj\n' + body + '\nendobj\n';
+    });
+    var xrefPos = out.length;
+    out += 'xref\n0 ' + (objects.length + 1) + '\n';
+    out += '0000000000 65535 f \n';
+    for (var n = 1; n <= objects.length; n++) {
+      out += String(offsets[n]).padStart(10, '0') + ' 00000 n \n';
+    }
+    out += 'trailer << /Size ' + (objects.length + 1) + ' /Root 1 0 R >>\nstartxref\n' + xrefPos + '\n%%EOF';
+    return out;
+  }
+
+  /* Unduh backup/laporan dari data yang sedang dimuat */
+  function downloadExport(format) {
+    if (format === 'xlsx' || format === 'excel') {
+      var excelData = laporanExportRows();
+      triggerDownload(new Blob(['\ufeff' + buildExcelXml(excelData)], { type: 'application/vnd.ms-excel;charset=utf-8' }), 'umkm-laporan.xls');
+      return;
+    }
+    if (format === 'pdf') {
+      var pdfData = laporanExportRows();
+      triggerDownload(new Blob([buildPdf(pdfData)], { type: 'application/pdf' }), 'umkm-laporan.pdf');
+      return;
+    }
+    var range = laporanRange();
+    var rows = filteredTransactions(range.from, range.to);
+    var filename;
+    var blob;
+    if (format === 'csv') {
+      var header = ['id', 'tanggal', 'kasir', 'metode', 'subtotal', 'diskon', 'pajak', 'total', 'dibayar', 'kembalian'];
+      var lines = [header.join(',')];
+      rows.forEach(function (t) {
+        lines.push([t.id, t.at, t.cashier, t.payMethod, t.subtotal, t.discount, t.tax, t.total, t.paid, t.change].join(','));
+      });
+      blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+      filename = 'umkm-laporan.csv';
+    } else {
+      blob = new Blob([JSON.stringify(buildBackupPayload(), null, 2)], { type: 'application/json;charset=utf-8' });
+      filename = 'umkm-backup.json';
+    }
+    triggerDownload(blob, filename);
+  }
+
+  /* Tanggal lokal format YYYY-MM-DD untuk agregasi harian */
+  function localDateKey(date) {
+    var d = new Date(date);
+    var m = String(d.getMonth() + 1).padStart(2, '0');
+    var day = String(d.getDate()).padStart(2, '0');
+    return d.getFullYear() + '-' + m + '-' + day;
+  }
+
+  /* Render seluruh widget halaman Dashboard */
+  function renderDashboard() {
+    renderDashStore();
+    renderDashStats();
+    renderDashChart();
+    renderDashAlerts();
+    renderDashNearExpiry();
+    renderDashLowStock();
+    renderDashActivity();
+  }
+
+  /* Kartu identitas toko dan kasir */
+  function renderDashStore() {
+    var wrap = document.getElementById('dash-store');
+    if (!wrap) return;
+    var name = state.settings.storeName || 'UMKM Kasir';
+    var cashier = state.settings.cashierName || 'Kasir';
+    wrap.innerHTML =
+      '<div class="flex items-center gap-3">' +
+        '<div class="w-12 h-12 shrink-0 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-lg">' + escapeHtml(name.charAt(0).toUpperCase()) + '</div>' +
+        '<div class="min-w-0">' +
+          '<p class="text-[11px] uppercase tracking-widest text-slate-400">Toko</p>' +
+          '<p class="font-bold text-emerald-800 leading-tight truncate">' + escapeHtml(name) + '</p>' +
+          '<p class="text-xs text-slate-500">' + escapeHtml(cashier) + '</p>' +
+        '</div>' +
+      '</div>';
+  }
+
+  /* Kartu ringkasan omzet, stok, dan kedaluwarsa */
+  function renderDashStats() {
+    var wrap = document.getElementById('dash-stats');
+    if (!wrap) return;
+    var todayKey = localDateKey(new Date());
+    var omzetToday = 0;
+    var trxToday = 0;
+    state.transactions.forEach(function (t) {
+      if (localDateKey(t.at) === todayKey) {
+        omzetToday += Number(t.total) || 0;
+        trxToday += 1;
+      }
+    });
+    var catalog = catalogProducts('', 'Semua');
+    var totalStock = 0;
+    catalog.forEach(function (p) { totalStock += Number(p.stock) || 0; });
+    var nearExp = countNearExpiry();
+    var lowCount = catalog.filter(function (p) {
+      var prod = findProductByName(p.name);
+      var min = prod && prod.minStock != null ? Number(prod.minStock) : 5;
+      return p.stock <= min;
+    }).length;
+    updateNotifBadge(nearExp);
+    var cards = [
+      { label: 'Total Produk', value: String(catalog.length), sub: 'dari batch stok', cls: 'text-emerald-700' },
+      { label: 'Total Stok', value: String(totalStock), sub: 'semua rak', cls: 'text-emerald-700' },
+      { label: 'Penjualan Hari Ini', value: formatRupiah(omzetToday), sub: trxToday + ' transaksi', cls: 'text-emerald-700' },
+      { label: 'Jumlah Transaksi', value: String(state.transactions.length), sub: 'semua waktu', cls: 'text-emerald-700' },
+      { label: 'Hampir Expired', value: String(nearExp), sub: 'H-7 / H-3 / hari ini', cls: nearExp ? 'text-amber-600' : 'text-emerald-700' },
+      { label: 'Stok Menipis', value: String(lowCount), sub: 'di bawah minimum', cls: lowCount ? 'text-rose-600' : 'text-emerald-700' }
+    ];
+    wrap.innerHTML = cards.map(function (c) {
+      return '<div class="bg-white rounded-2xl p-3 card-shadow">' +
+        '<p class="text-[11px] text-slate-500 truncate">' + escapeHtml(c.label) + '</p>' +
+        '<p class="text-lg font-bold truncate ' + c.cls + '">' + escapeHtml(c.value) + '</p>' +
+        '<p class="text-[10px] text-slate-400">' + escapeHtml(c.sub) + '</p>' +
+      '</div>';
+    }).join('');
+  }
+
+  /* Grafik batang omzet 7 hari terakhir */
+  function renderDashChart() {
+    var wrap = document.getElementById('dash-chart');
+    if (!wrap) return;
+    var days = [];
+    var i;
+    for (i = 6; i >= 0; i--) {
+      var d = new Date();
+      d.setDate(d.getDate() - i);
+      days.push({ key: localDateKey(d), label: String(d.getDate()).padStart(2, '0'), total: 0 });
+    }
+    state.transactions.forEach(function (t) {
+      var key = localDateKey(t.at);
+      for (var j = 0; j < days.length; j++) {
+        if (days[j].key === key) { days[j].total += Number(t.total) || 0; break; }
+      }
+    });
+    var max = Math.max.apply(null, days.map(function (x) { return x.total; }).concat([1]));
+    wrap.innerHTML = days.map(function (x) {
+      var pct = x.total > 0 ? Math.max(Math.round((x.total / max) * 100), 4) : 2;
+      return '<div class="flex-1 h-full flex flex-col items-center justify-end gap-1">' +
+        '<div class="flex-1 w-full flex items-end justify-center">' +
+          '<div class="w-full max-w-[32px] rounded-t-md bg-umkm chart-bar" style="height:' + pct + '%" title="' + escapeAttr(x.key + ' · ' + formatRupiah(x.total)) + '"></div>' +
+        '</div>' +
+        '<span class="text-[10px] font-semibold text-slate-500">' + x.label + '</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  /* Hitung jumlah batch aktif yang expired dalam 7 hari atau sudah lewat */
+  function countNearExpiry() {
+    var count = 0;
+    state.batches.forEach(function (b) {
+      if (Number(b.stock) <= 0) return;
+      if (daysUntil(b.expiredDate) <= 7) count += 1;
+    });
+    return count;
+  }
+
+  /* Perbarui badge notifikasi jumlah batch hampir expired */
+  function updateNotifBadge(count) {
+    var badge = document.getElementById('notif-badge');
+    if (!badge) return;
+    badge.textContent = String(count);
+    badge.classList.toggle('hidden', !count);
+  }
+
+  /* Daftar peringatan batch H-7 dan H-3 */
+  function renderDashAlerts() {
+    var wrap = document.getElementById('dash-alerts');
+    if (!wrap) return;
+    var items = state.batches
+      .filter(function (b) { return Number(b.stock) > 0; })
+      .map(function (b) { return { b: b, d: daysUntil(b.expiredDate) }; })
+      .filter(function (x) { return x.d <= 7; })
+      .sort(function (a, b) { return a.d - b.d; });
+    if (!items.length) {
+      wrap.innerHTML = '<p class="text-sm text-slate-400 py-4 text-center">Tidak ada peringatan expired</p>';
+      return;
+    }
+    wrap.innerHTML = items.slice(0, 12).map(function (x) {
+      var st = expiryStatus(x.b.expiredDate);
+      return '<div class="flex items-center justify-between gap-2 bg-slate-50 rounded-xl px-2 py-1.5">' +
+        '<div class="min-w-0">' +
+          '<p class="text-xs font-semibold truncate">' + escapeHtml(x.b.name) + '</p>' +
+          '<p class="text-[10px] text-slate-400">Rak ' + escapeHtml(x.b.location || '-') + ' · ' + escapeHtml(x.b.expiredDate || '-') + '</p>' +
+        '</div>' +
+        '<span class="text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap ' + st.cls + '">' + st.label + '</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  /* Produk dengan tanggal expired terdekat */
+  function renderDashNearExpiry() {
+    var wrap = document.getElementById('dash-near-exp');
+    if (!wrap) return;
+    var items = catalogProducts('', 'Semua')
+      .filter(function (p) { return daysUntil(p.nearestExp) <= 7; })
+      .sort(function (a, b) { return daysUntil(a.nearestExp) - daysUntil(b.nearestExp); });
+    if (!items.length) {
+      wrap.innerHTML = '<p class="text-sm text-slate-400 py-4 text-center">Semua produk masih aman</p>';
+      return;
+    }
+    wrap.innerHTML = items.slice(0, 8).map(function (p) {
+      var st = expiryStatus(p.nearestExp);
+      return '<div class="flex items-center justify-between gap-2">' +
+        '<div class="min-w-0">' +
+          '<p class="text-xs font-semibold truncate">' + escapeHtml(p.name) + '</p>' +
+          '<p class="text-[10px] text-slate-400">Stok ' + p.stock + ' · ' + escapeHtml(p.nearestExp || '-') + '</p>' +
+        '</div>' +
+        '<span class="text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap ' + st.cls + '">' + st.label + '</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  /* Produk dengan stok di bawah atau sama dengan batas minimum */
+  function renderDashLowStock() {
+    var wrap = document.getElementById('dash-low-stock');
+    if (!wrap) return;
+    var items = catalogProducts('', 'Semua').filter(function (p) {
+      var prod = findProductByName(p.name);
+      var min = prod && prod.minStock != null ? Number(prod.minStock) : 5;
+      return p.stock <= min;
+    }).sort(function (a, b) { return a.stock - b.stock; });
+    if (!items.length) {
+      wrap.innerHTML = '<p class="text-sm text-slate-400 py-4 text-center">Stok semua produk aman</p>';
+      return;
+    }
+    wrap.innerHTML = items.slice(0, 8).map(function (p) {
+      var prod = findProductByName(p.name);
+      var min = prod && prod.minStock != null ? Number(prod.minStock) : 5;
+      return '<div class="flex items-center justify-between gap-2">' +
+        '<div class="min-w-0">' +
+          '<p class="text-xs font-semibold truncate">' + escapeHtml(p.name) + '</p>' +
+          '<p class="text-[10px] text-slate-400">Min ' + min + ' · Rak ' + escapeHtml(p.location) + '</p>' +
+        '</div>' +
+        '<span class="text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap bg-rose-100 text-rose-700">' + p.stock + ' tersisa</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  /* Aktivitas transaksi terbaru */
+  function renderDashActivity() {
+    var wrap = document.getElementById('dash-activity');
+    if (!wrap) return;
+    var list = state.transactions.slice(0, 5);
+    if (!list.length) {
+      wrap.innerHTML = '<p class="text-sm text-slate-400 py-4 text-center">Belum ada transaksi</p>';
+      return;
+    }
+    wrap.innerHTML = list.map(function (t) {
+      return '<div class="flex items-center justify-between gap-2 bg-slate-50 rounded-xl px-3 py-2">' +
+        '<div class="min-w-0">' +
+          '<p class="text-xs font-semibold">' + escapeHtml(t.id) + '</p>' +
+          '<p class="text-[10px] text-slate-400">' + new Date(t.at).toLocaleString('id-ID') + ' · ' + escapeHtml(t.payMethod || '-') + '</p>' +
+        '</div>' +
+        '<span class="text-xs font-bold text-emerald-700 whitespace-nowrap">' + formatRupiah(t.total) + '</span>' +
+      '</div>';
     }).join('');
   }
 
@@ -574,31 +1649,96 @@
     showToast._t = setTimeout(function () { el.classList.add('hidden'); }, 2200);
   }
 
-  /* Simpan batch baru dari form input barang (fitur existing Stok) */
+  /* Ambil input form berdasarkan atribut name */
+  function formField(form, name) {
+    return (form.elements && form.elements[name]) || form.querySelector('[name="' + name + '"]');
+  }
+
+  /* Pastikan produk ada di Sheets; jika belum, tulis ulang katalog termasuk produk baru */
+  function ensureProduct(name, price, location, category) {
+    var existing = findProductByName(name);
+    if (existing) {
+      if (!existing.sellPrice && price) existing.sellPrice = price;
+      if (location) existing.location = location;
+      if (category) existing.category = category;
+      return Promise.resolve(existing);
+    }
+    var nextId = 'P' + (state.products.length + 1);
+    var used = {};
+    state.products.forEach(function (p) { used[String(p.id)] = true; });
+    var i = 1;
+    while (used[nextId]) { i += 1; nextId = 'P' + i; }
+    var product = {
+      id: nextId,
+      sku: 'SKU-' + (1000 + i),
+      name: name,
+      category: category || 'Umum',
+      unit: 'pcs',
+      sellPrice: price,
+      buyPrice: Math.round(price * 0.8),
+      minStock: 5,
+      location: location
+    };
+    var backup = buildBackupPayload();
+    backup.products.push({
+      id: product.id,
+      sku: product.sku,
+      name: product.name,
+      category: product.category,
+      unit: product.unit,
+      price: product.sellPrice,
+      sell_price: product.sellPrice,
+      buy_price: product.buyPrice,
+      min_stock: product.minStock,
+      location: product.location
+    });
+    backup.action = 'restore';
+    return sheetsPost(API_FITUR, backup).then(function (body) {
+      assertOk(body);
+      state.products.push(product);
+      return product;
+    });
+  }
+
+  /* Simpan batch baru ke Google Sheets */
   function handleSaveBatch(event) {
     event.preventDefault();
     var form = event.target;
-    var name = form.name.value.trim();
-    var stock = parseInt(form.stock.value, 10);
-    var price = parseInt(form.price.value, 10);
-    var location = form.location.value.trim();
-    var expiredDate = form.expiredDate.value;
+    var name = formField(form, 'name').value.trim();
+    var stock = parseInt(formField(form, 'stock').value, 10);
+    var price = parseInt(formField(form, 'price').value, 10);
+    var location = formField(form, 'location').value.trim();
+    var expiredDate = formField(form, 'expiredDate').value;
+    var categoryEl = formField(form, 'category');
+    var category = categoryEl ? categoryEl.value.trim() : '';
     if (!name || !location || !expiredDate || stock < 1 || price < 0 || isNaN(stock) || isNaN(price)) {
       return showToast('Lengkapi data barang dengan benar');
     }
-    state.batches.push({
-      id: 'B-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
-      name: name,
-      stock: stock,
-      price: price,
-      location: location,
-      expiredDate: expiredDate,
-      createdAt: new Date().toISOString()
+    var submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+    ensureProduct(name, price, location, category).then(function (product) {
+      return sheetsPost(API_FITUR, {
+        action: 'createBatch',
+        product_id: product.id,
+        name: name,
+        qty: stock,
+        stock: stock,
+        price: price,
+        location: location,
+        expired_date: expiredDate,
+        expiredDate: expiredDate,
+        category: category
+      }).then(function (body) {
+        assertOk(body);
+        form.reset();
+        showToast('Batch disimpan (FIFO)');
+        return syncState();
+      });
+    }).catch(function (err) {
+      showToast(err.message || 'Gagal menyimpan batch');
+    }).then(function () {
+      if (submitBtn) submitBtn.disabled = false;
     });
-    saveState();
-    form.reset();
-    renderKasir();
-    showToast('Batch disimpan (FIFO)');
   }
 
   /* Handler delegasi klik tombol plus/minus di kartu dan keranjang */
@@ -658,18 +1798,341 @@
     if (printBtn) printBtn.addEventListener('click', printReceipt);
     var form = document.getElementById('form-barang');
     if (form) form.addEventListener('submit', handleSaveBatch);
+    var stokSearch = document.getElementById('search-stok');
+    if (stokSearch) stokSearch.addEventListener('input', renderStok);
+    var stokList = document.getElementById('stok-list');
+    if (stokList) {
+      stokList.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-edit-batch]');
+        if (!btn) return;
+        openEditBatch(btn.getAttribute('data-edit-batch'));
+      });
+    }
+    var closeModalBtn = document.getElementById('btn-close-modal');
+    if (closeModalBtn) closeModalBtn.addEventListener('click', closeModal);
+    var modalOverlay = document.getElementById('modal-overlay');
+    if (modalOverlay) {
+      modalOverlay.addEventListener('click', function (e) {
+        if (e.target === modalOverlay) closeModal();
+      });
+    }
     var notif = document.getElementById('btn-notif');
     if (notif) notif.addEventListener('click', function () { setPage('expired'); });
+    var themeBtn = document.getElementById('btn-theme');
+    if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
+
+    var expiredFilters = document.getElementById('expired-filters');
+    if (expiredFilters) {
+      expiredFilters.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-exp-filter]');
+        if (!btn) return;
+        state.expiredFilter = btn.getAttribute('data-exp-filter');
+        renderExpired();
+      });
+    }
+    var riwayatSearch = document.getElementById('search-riwayat');
+    if (riwayatSearch) riwayatSearch.addEventListener('input', renderRiwayat);
+
+    var periodEl = document.getElementById('laporan-period');
+    if (periodEl) {
+      periodEl.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-period]');
+        if (!btn) return;
+        state.laporanPeriod = btn.getAttribute('data-period');
+        state.laporanFrom = '';
+        state.laporanTo = '';
+        renderLaporan();
+      });
+    }
+    var laporanFrom = document.getElementById('laporan-from');
+    if (laporanFrom) {
+      laporanFrom.addEventListener('change', function () {
+        state.laporanFrom = laporanFrom.value;
+        renderLaporan();
+      });
+    }
+    var laporanTo = document.getElementById('laporan-to');
+    if (laporanTo) {
+      laporanTo.addEventListener('change', function () {
+        state.laporanTo = laporanTo.value;
+        renderLaporan();
+      });
+    }
+    var csvBtn = document.getElementById('btn-export-csv');
+    if (csvBtn) csvBtn.addEventListener('click', function () { downloadExport('csv'); });
+    var jsonBtn = document.getElementById('btn-export-json');
+    if (jsonBtn) jsonBtn.addEventListener('click', function () { downloadExport('json'); });
+    var xlsxBtn = document.getElementById('btn-export-xlsx');
+    if (xlsxBtn) xlsxBtn.addEventListener('click', function () { downloadExport('xlsx'); });
+    var pdfBtn = document.getElementById('btn-export-pdf');
+    if (pdfBtn) pdfBtn.addEventListener('click', function () { downloadExport('pdf'); });
+    var reportFileBtn = document.getElementById('btn-export-laporan-file');
+    if (reportFileBtn) reportFileBtn.addEventListener('click', function () { downloadExport('json'); });
+    var reportXlsxBtn = document.getElementById('btn-export-laporan-xlsx');
+    if (reportXlsxBtn) reportXlsxBtn.addEventListener('click', function () { downloadExport('xlsx'); });
+    var reportPdfBtn = document.getElementById('btn-export-laporan-pdf');
+    if (reportPdfBtn) reportPdfBtn.addEventListener('click', function () { downloadExport('pdf'); });
+    var backupBtn = document.getElementById('btn-backup');
+    if (backupBtn) backupBtn.addEventListener('click', function () { downloadExport('json'); });
+    var restoreInput = document.getElementById('input-restore');
+    if (restoreInput) restoreInput.addEventListener('change', handleRestoreFile);
+    var resetBtn = document.getElementById('btn-reset');
+    if (resetBtn) resetBtn.addEventListener('click', handleReset);
+    var settingsForm = document.getElementById('form-settings');
+    if (settingsForm) settingsForm.addEventListener('submit', handleSaveSettings);
+    var themeOpts = document.getElementById('ui-theme-options');
+    if (themeOpts) {
+      themeOpts.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-theme]');
+        if (btn) setUiPref('theme', btn.getAttribute('data-theme'));
+      });
+    }
+    var brandOpts = document.getElementById('ui-brand-options');
+    if (brandOpts) {
+      brandOpts.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-brand]');
+        if (!btn) return;
+        var id = btn.getAttribute('data-brand');
+        state.ui.brand = id;
+        state.ui.brandHex = hexFromBrand(id);
+        saveUiPrefs();
+        applyAppearance();
+      });
+    }
+    var btnOpts = document.getElementById('ui-btn-options');
+    if (btnOpts) {
+      btnOpts.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-button]');
+        if (!btn) return;
+        var id = btn.getAttribute('data-button');
+        state.ui.button = id;
+        state.ui.buttonHex = hexFromButton(id);
+        saveUiPrefs();
+        applyAppearance();
+      });
+    }
+    var brandPicker = document.getElementById('ui-brand-picker');
+    if (brandPicker) {
+      brandPicker.addEventListener('input', function () {
+        setCustomColor('brand', brandPicker.value);
+      });
+    }
+    var btnPicker = document.getElementById('ui-btn-picker');
+    if (btnPicker) {
+      btnPicker.addEventListener('input', function () {
+        setCustomColor('button', btnPicker.value);
+      });
+    }
+    var brandHexInput = document.getElementById('ui-brand-hex');
+    if (brandHexInput) {
+      brandHexInput.addEventListener('change', function () {
+        setCustomColor('brand', brandHexInput.value);
+      });
+    }
+    var btnHexInput = document.getElementById('ui-btn-hex');
+    if (btnHexInput) {
+      btnHexInput.addEventListener('change', function () {
+        setCustomColor('button', btnHexInput.value);
+      });
+    }
+    var textOpts = document.getElementById('ui-text-options');
+    if (textOpts) {
+      textOpts.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-text]');
+        if (btn) setUiPref('text', btn.getAttribute('data-text'));
+      });
+    }
   }
 
-  /* Inisialisasi aplikasi: muat data, ikat event, render Kasir */
-  function init() {
-    loadState();
-    renderNav();
-    bindKasirEvents();
+  function brandHex() {
+    return normalizeHex(state.ui.brandHex) || hexFromBrand(state.ui.brand);
+  }
+
+  function buttonHex() {
+    return normalizeHex(state.ui.buttonHex) || hexFromButton(state.ui.button);
+  }
+
+  function paintUiColors(brand, btn) {
+    var style = document.getElementById('ui-override-style');
+    if (!style) {
+      style = document.createElement('style');
+      style.id = 'ui-override-style';
+      document.body.appendChild(style);
+    }
+    style.textContent =
+      '#topbar,#sidebar,.bg-umkm{background-color:' + brand + ' !important;}' +
+      '.bg-emerald-600,.hover\\:bg-emerald-500:hover{background-color:' + btn + ' !important;}' +
+      'html.dark #topbar,html.dark #sidebar{background-color:' + brand + ' !important;}';
+    ['topbar', 'sidebar'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.style.setProperty('background-color', brand, 'important');
+    });
+    document.querySelectorAll('.bg-umkm').forEach(function (el) {
+      el.style.setProperty('background-color', brand, 'important');
+    });
+    document.querySelectorAll('.bg-emerald-600').forEach(function (el) {
+      el.style.setProperty('background-color', btn, 'important');
+    });
+  }
+
+  /* Terapkan mode, warna, dan ukuran teks */
+  function applyAppearance() {
+    var dark = state.ui.theme === 'dark';
+    var brand = brandHex();
+    var btn = buttonHex();
+    var root = document.documentElement;
+    root.classList.toggle('dark', dark);
+    root.setAttribute('data-text', state.ui.text || 'sedang');
+    root.style.setProperty('--brand', brand);
+    root.style.setProperty('--btn', btn);
+    paintUiColors(brand, btn);
+    var moon = document.getElementById('theme-icon-moon');
+    var sun = document.getElementById('theme-icon-sun');
+    if (moon) moon.classList.toggle('hidden', dark);
+    if (sun) sun.classList.toggle('hidden', !dark);
+    renderUiOptions();
+  }
+
+  function applyTheme(dark) {
+    state.ui.theme = dark ? 'dark' : 'light';
+    saveUiPrefs();
+    applyAppearance();
+  }
+
+  function toggleTheme() {
+    applyTheme(state.ui.theme !== 'dark');
+  }
+
+  function setUiPref(key, value) {
+    state.ui[key] = value;
+    saveUiPrefs();
+    applyAppearance();
+  }
+
+  function setCustomColor(kind, value) {
+    var hex = normalizeHex(value);
+    if (!hex) return;
+    if (kind === 'brand') {
+      state.ui.brand = 'custom';
+      state.ui.brandHex = hex;
+    } else {
+      state.ui.button = 'custom';
+      state.ui.buttonHex = hex;
+    }
+    saveUiPrefs();
+    applyAppearance();
+  }
+
+  function loadSession() {
+    try { state.user = JSON.parse(localStorage.getItem(STORAGE_KEYS.session) || 'null'); } catch (e) { state.user = null; }
+  }
+
+  function saveSession() {
+    if (state.user) localStorage.setItem(STORAGE_KEYS.session, JSON.stringify(state.user));
+    else localStorage.removeItem(STORAGE_KEYS.session);
+  }
+
+  function showLoginError(msg) {
+    var el = document.getElementById('login-error');
+    if (!el) return;
+    if (!msg) {
+      el.classList.add('hidden');
+      el.textContent = '';
+      return;
+    }
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  }
+
+  function setAuthUi(loggedIn) {
+    var login = document.getElementById('login-screen');
+    var app = document.getElementById('app');
+    if (login) login.classList.toggle('hidden', loggedIn);
+    if (app) {
+      if (loggedIn) app.classList.remove('hidden');
+      else app.classList.add('hidden');
+    }
+    var userEl = document.getElementById('header-user');
+    if (userEl) userEl.textContent = loggedIn && state.user ? state.user.username : '';
+  }
+
+  function enterApp() {
+    setAuthUi(true);
     setPage('kasir');
     renderKasir();
     renderCart();
+    showToast('Memuat data...');
+    syncState().then(function () {
+      showToast('Data tersinkron');
+    }).catch(function (err) {
+      showToast(err.message || 'Gagal terhubung ke database. Coba muat ulang.');
+    });
+  }
+
+  function handleLogin(event) {
+    event.preventDefault();
+    var form = event.target;
+    var username = formField(form, 'username').value.trim();
+    var password = formField(form, 'password').value;
+    if (!username || !password) return showLoginError('Username dan password wajib diisi');
+    var btn = document.getElementById('btn-login');
+    if (btn) btn.disabled = true;
+    showLoginError('');
+    sheetsPost(API_LOGIN, { action: 'login', username: username, password: password })
+      .then(function (body) {
+        if (body.status !== 'success' && body.ok !== true) throw new Error(body.message || body.error || 'Login gagal');
+        state.user = { username: body.username || username };
+        saveSession();
+        enterApp();
+      })
+      .catch(function (err) { showLoginError(err.message || 'Login gagal'); })
+      .then(function () { if (btn) btn.disabled = false; });
+  }
+
+  function handleRegister() {
+    var form = document.getElementById('form-login');
+    if (!form) return;
+    var username = formField(form, 'username').value.trim();
+    var password = formField(form, 'password').value;
+    if (!username || !password) return showLoginError('Isi username dan password untuk daftar');
+    var btn = document.getElementById('btn-register');
+    if (btn) btn.disabled = true;
+    showLoginError('');
+    sheetsPost(API_LOGIN, { action: 'register', username: username, password: password, name: username })
+      .then(function (body) {
+        if (body.status !== 'success' && body.ok !== true) throw new Error(body.message || body.error || 'Registrasi gagal');
+        showLoginError(body.message || 'Registrasi berhasil. Silakan masuk.');
+      })
+      .catch(function (err) { showLoginError(err.message || 'Registrasi gagal'); })
+      .then(function () { if (btn) btn.disabled = false; });
+  }
+
+  function handleLogout() {
+    state.user = null;
+    saveSession();
+    setAuthUi(false);
+  }
+
+  /* Inisialisasi aplikasi: preferensi lokal, event, lalu tarik data Sheets jika sudah login */
+  function init() {
+    loadLocalPrefs();
+    loadSession();
+    try {
+      if (!localStorage.getItem(STORAGE_KEYS.ui) && localStorage.getItem('umkm_theme') === 'dark') {
+        state.ui.theme = 'dark';
+      }
+    } catch (e) {}
+    applyAppearance();
+    renderNav();
+    bindKasirEvents();
+    var loginForm = document.getElementById('form-login');
+    if (loginForm) loginForm.addEventListener('submit', handleLogin);
+    var registerBtn = document.getElementById('btn-register');
+    if (registerBtn) registerBtn.addEventListener('click', handleRegister);
+    var logoutBtn = document.getElementById('btn-logout');
+    if (logoutBtn) logoutBtn.addEventListener('click', handleLogout);
+    if (state.user && state.user.username) enterApp();
+    else setAuthUi(false);
   }
 
   if (document.readyState === 'loading') {

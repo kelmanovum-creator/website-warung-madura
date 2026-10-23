@@ -1,0 +1,9 @@
+.git
+.gitignore
+data
+node_modules
+npm-debug.log
+fifo-test.js
+Dockerfile
+docker-compose.yml
+.dockerignore

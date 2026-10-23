@@ -1,0 +1,18 @@
+services:
+  umkm-kasir:
+    build: .
+    image: umkm-kasir:latest
+    container_name: umkm-kasir
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: "8000"
+      DB_FILE: /app/data/umkm.db
+      APP_USERNAME: ${APP_USERNAME:-}
+      APP_PASSWORD: ${APP_PASSWORD:-}
+    volumes:
+      - umkm-data:/app/data
+
+volumes:
+  umkm-data:

@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: umkm-kasir
+    runtime: node
+    plan: starter
+    region: singapore
+    buildCommand: npm install --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.11.0
+      - key: DB_FILE
+        value: /var/data/umkm.db
+      - key: APP_USERNAME
+        sync: false
+      - key: APP_PASSWORD
+        sync: false
+    disk:
+      name: umkm-data
+      mountPath: /var/data
+      sizeGB: 1
