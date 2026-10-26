@@ -5,7 +5,8 @@
     cart: 'umkm_cart_v1',
     session: 'umkm_session_v1',
     ui: 'umkm_ui_v1',
-    notif: 'umkm_notif_read_v1'
+    notif: 'umkm_notif_read_v1',
+    settings: 'umkm_settings_v1'
   };
 
   var API_FITUR = 'https://script.google.com/macros/s/AKfycby9vdFhaJcib69-2jR5egzK_oknI5k-7kNFVQ4XuJ68lrrYLXphuWHGTECG5_Ng7zT1/exec';
@@ -76,9 +77,52 @@
     notifReadIds: []
   };
 
+  function currentOwner() {
+    return String((state.user && state.user.username) || '').trim().toLowerCase();
+  }
+
+  function ownerPrefix() {
+    var slug = currentOwner().replace(/[^a-z0-9]+/g, '').slice(0, 24) || 'user';
+    return 'u_' + slug + '_';
+  }
+
+  function scopedKey(base) {
+    return base + ':' + (currentOwner() || 'guest');
+  }
+
+  function recordOwner(rec) {
+    if (!rec || typeof rec !== 'object') return '';
+    return String(rec.owner || rec.user || rec.username || rec.owner_id || '').trim().toLowerCase();
+  }
+
+  function belongsToUser(rec, extraId) {
+    var me = currentOwner();
+    if (!me || !rec) return false;
+    var o = recordOwner(rec);
+    if (o) return o === me;
+    var prefix = ownerPrefix();
+    var ids = [rec.id, rec.product_id, rec.productId, rec.invoice_no, rec.sku, extraId];
+    for (var i = 0; i < ids.length; i++) {
+      var id = String(ids[i] || '');
+      if (id.indexOf(prefix) === 0) return true;
+    }
+    return false;
+  }
+
+  var remoteSnapshot = { products: [], batches: [], transactions: [], settings: {} };
+
+  function captureRemote(data) {
+    remoteSnapshot = {
+      products: Array.isArray(data.products) ? data.products.slice() : [],
+      batches: Array.isArray(data.batches) ? data.batches.slice() : [],
+      transactions: Array.isArray(data.transactions) ? data.transactions.slice() : [],
+      settings: data.settings && typeof data.settings === 'object' ? data.settings : {}
+    };
+  }
+
   /* Muat preferensi lokal per perangkat (keranjang dan tampilan) */
   function loadLocalPrefs() {
-    try { state.cart = JSON.parse(localStorage.getItem(STORAGE_KEYS.cart) || '[]'); } catch (e) { state.cart = []; }
+    try { state.cart = JSON.parse(localStorage.getItem(scopedKey(STORAGE_KEYS.cart)) || '[]'); } catch (e) { state.cart = []; }
     if (!Array.isArray(state.cart)) state.cart = [];
     try {
       var ui = JSON.parse(localStorage.getItem(STORAGE_KEYS.ui) || 'null');
@@ -92,13 +136,21 @@
       }
     } catch (e) {}
     try {
-      var ids = JSON.parse(localStorage.getItem(STORAGE_KEYS.notif) || '[]');
+      var ids = JSON.parse(localStorage.getItem(scopedKey(STORAGE_KEYS.notif)) || '[]');
       state.notifReadIds = Array.isArray(ids) ? ids.map(String) : [];
     } catch (e) { state.notifReadIds = []; }
   }
 
   function saveNotifRead() {
-    try { localStorage.setItem(STORAGE_KEYS.notif, JSON.stringify(state.notifReadIds)); } catch (e) {}
+    try { localStorage.setItem(scopedKey(STORAGE_KEYS.notif), JSON.stringify(state.notifReadIds)); } catch (e) {}
+  }
+
+  function saveLocalSettings() {
+    try {
+      var all = JSON.parse(localStorage.getItem(STORAGE_KEYS.settings) || '{}');
+      if (currentOwner()) all[currentOwner()] = state.settings;
+      localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(all));
+    } catch (e) {}
   }
 
   function saveUiPrefs() {
@@ -126,9 +178,9 @@
     return found ? found.hex : '#059669';
   }
 
-  /* Simpan keranjang per perangkat; data bisnis disimpan di database server */
+  /* Simpan keranjang per akun di perangkat ini */
   function saveCart() {
-    localStorage.setItem(STORAGE_KEYS.cart, JSON.stringify(state.cart));
+    localStorage.setItem(scopedKey(STORAGE_KEYS.cart), JSON.stringify(state.cart));
   }
 
   function parseSheetsBody(res, text) {
@@ -267,11 +319,23 @@
   }
 
   function applyRemoteState(data) {
-    state.products = (Array.isArray(data.products) ? data.products : []).map(mapProduct);
-    state.batches = (Array.isArray(data.batches) ? data.batches : []).map(function (b) { return mapBatch(b, state.products); });
-    state.transactions = (Array.isArray(data.transactions) ? data.transactions : []).map(mapTransaction);
+    captureRemote(data);
+    var mineProducts = (remoteSnapshot.products || []).filter(function (p) { return belongsToUser(p); });
+    var mineBatches = (remoteSnapshot.batches || []).filter(function (b) { return belongsToUser(b); });
+    var mineTrx = (remoteSnapshot.transactions || []).filter(function (t) { return belongsToUser(t, t.invoice_no || t.id); });
+    state.products = mineProducts.map(mapProduct);
+    state.batches = mineBatches.map(function (b) { return mapBatch(b, state.products); });
+    state.transactions = mineTrx.map(mapTransaction);
     state.transactions = sortedTransactions();
-    var raw = data.settings || {};
+    var raw = {};
+    try {
+      var saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.settings) || '{}');
+      if (currentOwner() && saved[currentOwner()]) raw = saved[currentOwner()];
+    } catch (e) {}
+    if (!raw.storeName && !raw.store_name) {
+      var sheetSettings = remoteSnapshot.settings || {};
+      if (recordOwner(sheetSettings) === currentOwner()) raw = sheetSettings;
+    }
     state.settings = {
       storeName: raw.storeName || raw.store_name || 'UMKM Kasir',
       cashierName: raw.cashierName || raw.cashier_name || (state.user && state.user.username) || 'Kasir',
@@ -502,7 +566,19 @@
     return found ? found.id : '';
   }
 
-  /* Checkout ke Google Sheets: kurangi stok dan catat transaksi */
+  function deductCartFromBatches() {
+    state.cart.forEach(function (c) {
+      var left = Number(c.qty) || 0;
+      fifoBatches(c.name).forEach(function (b) {
+        if (left <= 0) return;
+        var take = Math.min(Number(b.stock) || 0, left);
+        b.stock -= take;
+        left -= take;
+      });
+    });
+  }
+
+  /* Checkout: kurangi stok akun ini lalu gabung ke Sheets tanpa menimpa user lain */
   function checkout() {
     if (!state.cart.length) return showToast('Keranjang kosong');
     var total = cartTotal();
@@ -511,56 +587,43 @@
     }
     var btn = document.getElementById('btn-checkout');
     if (btn) btn.disabled = true;
-    var items = [];
-    var missing = '';
-    state.cart.forEach(function (c) {
-      var pid = productIdByName(c.name);
-      if (!pid) missing = c.name;
-      items.push({ product_id: pid, qty: c.qty, name: c.name, price: c.price });
-    });
-    if (missing) {
-      if (btn) btn.disabled = false;
-      return showToast('Produk ' + missing + ' belum ada di database');
-    }
-    sheetsPost(API_FITUR, {
-      action: 'checkout',
-      items: items,
-      discount: cartDiscount(),
-      pay_method: state.payMethod,
+    deductCartFromBatches();
+    var trx = {
+      id: nextInvoiceId(),
+      at: new Date().toISOString(),
+      cashier: (state.user && state.user.username) || state.settings.cashierName || 'Kasir',
       payMethod: state.payMethod,
       paid: cartPaid(),
-      cashier: (state.user && state.user.username) || state.settings.cashierName || 'Kasir'
-    }).then(function (body) {
-      assertOk(body);
-      var trx = mapTransaction(body.transaction || body);
-      if (!trx.lines.length) {
-        trx.lines = state.cart.map(function (c) {
-          return { name: c.name, qty: c.qty, price: c.price };
-        });
-      }
-      if (!trx.subtotal) trx.subtotal = cartSubtotal();
-      if (!trx.total) trx.total = cartTotal();
-      if (!trx.discount) trx.discount = cartDiscount();
-      if (!trx.tax) trx.tax = cartTax();
-      if (!trx.at) trx.at = new Date().toISOString();
-      if (!trx.payMethod) trx.payMethod = state.payMethod;
-      upsertTransaction(trx);
-      state.cart = [];
-      state.lastTrx = trx;
-      saveCart();
-      renderCurrentPage();
-      var discEl = document.getElementById('cart-discount');
-      var paidEl = document.getElementById('cart-paid');
-      if (discEl) discEl.value = '0';
-      if (paidEl) paidEl.value = '0';
-      closeCart();
-      showSuccess(trx);
-      return syncState();
-    }).catch(function (err) {
-      showToast(err.message || 'Checkout gagal');
-    }).then(function () {
-      if (btn) btn.disabled = false;
-    });
+      change: cartChange(),
+      discount: cartDiscount(),
+      tax: cartTax(),
+      subtotal: cartSubtotal(),
+      total: total,
+      lines: state.cart.map(function (c) {
+        return { name: c.name, qty: c.qty, price: c.price, product_id: productIdByName(c.name) };
+      })
+    };
+    upsertTransaction(trx);
+    state.cart = [];
+    state.lastTrx = trx;
+    saveCart();
+    renderCurrentPage();
+    var discEl = document.getElementById('cart-discount');
+    var paidEl = document.getElementById('cart-paid');
+    if (discEl) discEl.value = '0';
+    if (paidEl) paidEl.value = '0';
+    closeCart();
+    persistMine()
+      .then(function () {
+        showSuccess(trx);
+        return syncState();
+      })
+      .catch(function (err) {
+        showToast(err.message || 'Checkout gagal');
+      })
+      .then(function () {
+        if (btn) btn.disabled = false;
+      });
   }
 
   function showSuccess(trx) {
@@ -876,11 +939,8 @@
     batch.expiredDate = expiredDate;
     var submitBtn = form.querySelector('button[type="submit"]');
     if (submitBtn) submitBtn.disabled = true;
-    var payload = buildBackupPayload();
-    payload.action = 'restore';
-    sheetsPost(API_FITUR, payload)
-      .then(function (body) {
-        assertOk(body);
+    persistMine()
+      .then(function () {
         closeModal();
         showToast('Stok diperbarui');
         return syncState();
@@ -1169,59 +1229,152 @@
   function handleSaveSettings(event) {
     event.preventDefault();
     var form = event.target;
-    sheetsPost(API_FITUR, {
-      action: 'saveSettings',
-      store_name: formField(form, 'storeName').value.trim(),
-      storeName: formField(form, 'storeName').value.trim(),
-      cashier_name: formField(form, 'cashierName').value.trim(),
-      cashierName: formField(form, 'cashierName').value.trim(),
-      tax_percent: Number(formField(form, 'taxPercent').value) || 0,
-      taxPercent: Number(formField(form, 'taxPercent').value) || 0
-    }).then(function (body) {
-      assertOk(body);
-      showToast('Pengaturan disimpan');
-      return syncState();
-    }).catch(function (err) { showToast(err.message || 'Gagal menyimpan pengaturan'); });
+    state.settings.storeName = formField(form, 'storeName').value.trim();
+    state.settings.cashierName = formField(form, 'cashierName').value.trim();
+    state.settings.taxPercent = Number(formField(form, 'taxPercent').value) || 0;
+    saveLocalSettings();
+    showToast('Pengaturan disimpan');
+    renderCurrentPage();
   }
 
-  /* Bentuk backup JSON yang dipahami endpoint restore */
+  function withOwner(rec) {
+    var next = rec && typeof rec === 'object' ? rec : {};
+    next.owner = currentOwner();
+    next.user = currentOwner();
+    next.username = currentOwner();
+    return next;
+  }
+
+  function othersRecords(kind) {
+    return (remoteSnapshot[kind] || []).filter(function (rec) {
+      return !belongsToUser(rec, rec.invoice_no || rec.id);
+    });
+  }
+
+  function ownedId(id, kind) {
+    var prefix = ownerPrefix();
+    var raw = String(id || '');
+    if (raw.indexOf(prefix) === 0) return raw;
+    var tail = raw.replace(/[^a-zA-Z0-9]+/g, '') || kind || '1';
+    return prefix + tail;
+  }
+
+  function serializeProduct(p) {
+    return withOwner({
+      id: ownedId(p.id, 'P1'),
+      sku: ownedId(p.sku || p.id, 'SKU'),
+      name: p.name,
+      category: p.category,
+      unit: p.unit,
+      price: p.sellPrice,
+      sell_price: p.sellPrice,
+      buy_price: p.buyPrice,
+      min_stock: p.minStock,
+      location: p.location
+    });
+  }
+
+  function serializeBatch(b) {
+    return withOwner({
+      id: ownedId(b.id, 'B1'),
+      product_id: ownedId(b.productId, 'P1'),
+      name: b.name,
+      qty: b.stock,
+      price: b.price,
+      location: b.location,
+      expired_date: b.expiredDate,
+      created_at: b.createdAt
+    });
+  }
+
+  function serializeTransaction(t) {
+    var id = ownedId(t.id, 'TRX1');
+    return withOwner({
+      id: id,
+      invoice_no: id,
+      at: t.at,
+      created_at: t.at,
+      cashier: t.cashier,
+      payMethod: t.payMethod,
+      payment_method: t.payMethod,
+      paid: t.paid,
+      change: t.change,
+      change_amount: t.change,
+      discount: t.discount,
+      tax: t.tax,
+      subtotal: t.subtotal,
+      total: t.total,
+      lines: t.lines || [],
+      items: t.lines || []
+    });
+  }
+
+  /* Backup akun ini saja; restore ke Sheets digabung dengan data user lain */
   function buildBackupPayload() {
     return {
-      products: state.products.map(function (p) {
-        return {
-          id: p.id,
-          sku: p.sku,
-          name: p.name,
-          category: p.category,
-          unit: p.unit,
-          price: p.sellPrice,
-          sell_price: p.sellPrice,
-          buy_price: p.buyPrice,
-          min_stock: p.minStock,
-          location: p.location
-        };
-      }),
-      batches: state.batches.map(function (b) {
-        return {
-          id: b.id,
-          product_id: b.productId,
-          name: b.name,
-          qty: b.stock,
-          price: b.price,
-          location: b.location,
-          expired_date: b.expiredDate,
-          created_at: b.createdAt
-        };
-      }),
-      transactions: state.transactions,
-      settings: {
+      products: state.products.map(serializeProduct),
+      batches: state.batches.map(serializeBatch),
+      transactions: state.transactions.map(serializeTransaction),
+      settings: withOwner({
         store_name: state.settings.storeName,
         cashier_name: state.settings.cashierName,
         tax_percent: state.settings.taxPercent,
         address: state.settings.address || '',
         phone: state.settings.phone || ''
-      }
+      })
     };
+  }
+
+  function buildMergedRestorePayload(mine) {
+    var payload = mine || buildBackupPayload();
+    return {
+      action: 'restore',
+      products: othersRecords('products').concat(payload.products || []),
+      batches: othersRecords('batches').concat(payload.batches || []),
+      transactions: othersRecords('transactions').concat(payload.transactions || []),
+      settings: remoteSnapshot.settings || payload.settings || {}
+    };
+  }
+
+  function persistMine() {
+    return sheetsGet(API_FITUR, { action: 'state' }).then(function (data) {
+      assertOk(data);
+      captureRemote(data);
+      return sheetsPost(API_FITUR, buildMergedRestorePayload());
+    }).then(assertOk);
+  }
+
+  function nextProductId() {
+    var prefix = ownerPrefix() + 'P';
+    var used = {};
+    (remoteSnapshot.products || []).concat(state.products).forEach(function (p) { used[String(p.id)] = true; });
+    var i = 1;
+    var nextId = prefix + i;
+    while (used[nextId]) { i += 1; nextId = prefix + i; }
+    return nextId;
+  }
+
+  function nextBatchId() {
+    var prefix = ownerPrefix() + 'B';
+    var used = {};
+    (remoteSnapshot.batches || []).concat(state.batches).forEach(function (b) { used[String(b.id)] = true; });
+    var i = 1;
+    var nextId = prefix + i;
+    while (used[nextId]) { i += 1; nextId = prefix + i; }
+    return nextId;
+  }
+
+  function nextInvoiceId() {
+    var prefix = ownerPrefix() + 'TRX-';
+    var max = 0;
+    state.transactions.forEach(function (t) {
+      var id = String(t.id || '');
+      if (id.indexOf(prefix) === 0) {
+        var n = parseInt(id.slice(prefix.length), 10);
+        if (!isNaN(n) && n > max) max = n;
+      }
+    });
+    return prefix + String(max + 1).padStart(4, '0');
   }
 
   /* Pulihkan data dari file backup JSON ke Google Sheets */
@@ -1237,10 +1390,27 @@
       } catch (e) {
         return showToast('File backup tidak valid');
       }
-      payload.action = 'restore';
-      sheetsPost(API_FITUR, payload)
-        .then(function (body) {
-          assertOk(body);
+      var prefix = ownerPrefix();
+      state.products = (Array.isArray(payload.products) ? payload.products : []).map(function (p, i) {
+        var mapped = mapProduct(p);
+        mapped.id = prefix + 'P' + (i + 1);
+        return mapped;
+      });
+      var idMap = {};
+      (payload.products || []).forEach(function (p, i) { idMap[String(p.id)] = prefix + 'P' + (i + 1); });
+      state.batches = (Array.isArray(payload.batches) ? payload.batches : []).map(function (b, i) {
+        var mapped = mapBatch(b, state.products);
+        mapped.id = prefix + 'B' + (i + 1);
+        mapped.productId = idMap[String(b.product_id || b.productId || '')] || (state.products[0] && state.products[0].id) || prefix + 'P1';
+        return mapped;
+      });
+      state.transactions = (Array.isArray(payload.transactions) ? payload.transactions : []).map(function (t, i) {
+        var mapped = mapTransaction(t);
+        mapped.id = prefix + 'TRX-' + String(i + 1).padStart(4, '0');
+        return mapped;
+      });
+      persistMine()
+        .then(function () {
           showToast('Data berhasil dipulihkan');
           return syncState();
         })
@@ -1250,35 +1420,15 @@
     input.value = '';
   }
 
-  /* Reset seluruh data Sheets ke contoh awal */
+  /* Reset data akun yang login saja, tanpa menghapus stok user lain */
   function handleReset() {
-    if (!window.confirm('Hapus semua data dan kembalikan ke contoh awal?')) return;
-    var demo = {
-      action: 'restore',
-      products: [
-        { id: 'P1', sku: 'SKU-1001', name: 'Indomie Goreng', category: 'Makanan', unit: 'pcs', price: 3500, location: 'A-01', min_stock: 5 },
-        { id: 'P2', sku: 'SKU-1002', name: 'Aqua 600ml', category: 'Minuman', unit: 'pcs', price: 3000, location: 'B-02', min_stock: 5 },
-        { id: 'P3', sku: 'SKU-1003', name: 'Minyak Goreng', category: 'Sembako', unit: 'pcs', price: 18000, location: 'A-03', min_stock: 5 },
-        { id: 'P4', sku: 'SKU-1004', name: 'Gula 1kg', category: 'Sembako', unit: 'pcs', price: 17000, location: 'A-04', min_stock: 5 },
-        { id: 'P5', sku: 'SKU-1005', name: 'Susu UHT', category: 'Minuman', unit: 'pcs', price: 8000, location: 'C-01', min_stock: 5 },
-        { id: 'P6', sku: 'SKU-1006', name: 'Teh Botol', category: 'Minuman', unit: 'pcs', price: 4000, location: 'B-05', min_stock: 5 }
-      ],
-      batches: [
-        { id: 1, product_id: 'P1', qty: 20, expired_date: '2026-12-31', created_at: '2026-09-01T00:00:00.000Z' },
-        { id: 2, product_id: 'P2', qty: 15, expired_date: '2026-10-20', created_at: '2026-09-01T00:00:00.000Z' },
-        { id: 3, product_id: 'P3', qty: 10, expired_date: '2026-10-10', created_at: '2026-09-01T00:00:00.000Z' },
-        { id: 4, product_id: 'P4', qty: 8, expired_date: '2026-10-07', created_at: '2026-09-01T00:00:00.000Z' },
-        { id: 5, product_id: 'P5', qty: 12, expired_date: '2026-11-15', created_at: '2026-09-01T00:00:00.000Z' },
-        { id: 6, product_id: 'P6', qty: 18, expired_date: '2026-10-25', created_at: '2026-09-01T00:00:00.000Z' }
-      ],
-      transactions: [],
-      transaction_items: [],
-      settings: { store_name: 'UMKM Kasir', cashier_name: 'Kasir', tax_percent: 0, address: '', phone: '' }
-    };
-    sheetsPost(API_FITUR, demo)
-      .then(function (body) {
-        assertOk(body);
-        showToast('Data direset');
+    if (!window.confirm('Hapus stok dan transaksi akun ini? Data user lain tidak terpengaruh.')) return;
+    state.products = [];
+    state.batches = [];
+    state.transactions = [];
+    persistMine()
+      .then(function () {
+        showToast('Data akun direset');
         return syncState();
       })
       .catch(function (err) { showToast(err.message || 'Gagal reset data'); });
@@ -1824,23 +1974,19 @@
     return (form.elements && form.elements[name]) || form.querySelector('[name="' + name + '"]');
   }
 
-  /* Pastikan produk ada di Sheets; jika belum, tulis ulang katalog termasuk produk baru */
+  /* Pastikan produk ada di katalog akun ini */
   function ensureProduct(name, price, location, category) {
     var existing = findProductByName(name);
     if (existing) {
       if (!existing.sellPrice && price) existing.sellPrice = price;
       if (location) existing.location = location;
       if (category) existing.category = category;
-      return Promise.resolve(existing);
+      return existing;
     }
-    var nextId = 'P' + (state.products.length + 1);
-    var used = {};
-    state.products.forEach(function (p) { used[String(p.id)] = true; });
-    var i = 1;
-    while (used[nextId]) { i += 1; nextId = 'P' + i; }
+    var nextId = nextProductId();
     var product = {
       id: nextId,
-      sku: 'SKU-' + (1000 + i),
+      sku: 'SKU-' + nextId.replace(/\W/g, '').slice(-6),
       name: name,
       category: category || 'Umum',
       unit: 'pcs',
@@ -1849,25 +1995,8 @@
       minStock: 5,
       location: location
     };
-    var backup = buildBackupPayload();
-    backup.products.push({
-      id: product.id,
-      sku: product.sku,
-      name: product.name,
-      category: product.category,
-      unit: product.unit,
-      price: product.sellPrice,
-      sell_price: product.sellPrice,
-      buy_price: product.buyPrice,
-      min_stock: product.minStock,
-      location: product.location
-    });
-    backup.action = 'restore';
-    return sheetsPost(API_FITUR, backup).then(function (body) {
-      assertOk(body);
-      state.products.push(product);
-      return product;
-    });
+    state.products.push(product);
+    return product;
   }
 
   /* Simpan batch baru ke Google Sheets */
@@ -1886,29 +2015,29 @@
     }
     var submitBtn = form.querySelector('button[type="submit"]');
     if (submitBtn) submitBtn.disabled = true;
-    ensureProduct(name, price, location, category).then(function (product) {
-      return sheetsPost(API_FITUR, {
-        action: 'createBatch',
-        product_id: product.id,
-        name: name,
-        qty: stock,
-        stock: stock,
-        price: price,
-        location: location,
-        expired_date: expiredDate,
-        expiredDate: expiredDate,
-        category: category
-      }).then(function (body) {
-        assertOk(body);
+    var product = ensureProduct(name, price, location, category);
+    state.batches.push({
+      id: nextBatchId(),
+      productId: product.id,
+      name: product.name,
+      stock: stock,
+      price: price,
+      location: location,
+      expiredDate: expiredDate,
+      createdAt: new Date().toISOString()
+    });
+    persistMine()
+      .then(function () {
         form.reset();
         showToast('Batch disimpan (FIFO)');
         return syncState();
+      })
+      .catch(function (err) {
+        showToast(err.message || 'Gagal menyimpan batch');
+      })
+      .then(function () {
+        if (submitBtn) submitBtn.disabled = false;
       });
-    }).catch(function (err) {
-      showToast(err.message || 'Gagal menyimpan batch');
-    }).then(function () {
-      if (submitBtn) submitBtn.disabled = false;
-    });
   }
 
   /* Handler delegasi klik tombol plus/minus di kartu dan keranjang */
@@ -2301,6 +2430,7 @@
   }
 
   function enterApp() {
+    loadLocalPrefs();
     setAuthUi(true);
     setPage('kasir');
     renderKasir();
@@ -2369,14 +2499,19 @@
 
   function handleLogout() {
     state.user = null;
+    state.products = [];
+    state.batches = [];
+    state.transactions = [];
+    state.cart = [];
     saveSession();
+    loadLocalPrefs();
     setAuthUi(false);
   }
 
   /* Inisialisasi aplikasi: preferensi lokal, event, lalu tarik data Sheets jika sudah login */
   function init() {
-    loadLocalPrefs();
     loadSession();
+    loadLocalPrefs();
     try {
       if (!localStorage.getItem(STORAGE_KEYS.ui) && localStorage.getItem('umkm_theme') === 'dark') {
         state.ui.theme = 'dark';
