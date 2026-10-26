@@ -4,7 +4,8 @@
   var STORAGE_KEYS = {
     cart: 'umkm_cart_v1',
     session: 'umkm_session_v1',
-    ui: 'umkm_ui_v1'
+    ui: 'umkm_ui_v1',
+    notif: 'umkm_notif_read_v1'
   };
 
   var API_FITUR = 'https://script.google.com/macros/s/AKfycby9vdFhaJcib69-2jR5egzK_oknI5k-7kNFVQ4XuJ68lrrYLXphuWHGTECG5_Ng7zT1/exec';
@@ -66,9 +67,13 @@
     laporanPeriod: '7',
     laporanFrom: '',
     laporanTo: '',
+    riwayatPeriod: 'all',
+    riwayatFrom: '',
+    riwayatTo: '',
     user: null,
     busy: false,
-    ui: { theme: 'light', brand: 'hijau', button: 'emerald', text: 'sedang', brandHex: '#005A36', buttonHex: '#059669' }
+    ui: { theme: 'light', brand: 'hijau', button: 'emerald', text: 'sedang', brandHex: '#005A36', buttonHex: '#059669' },
+    notifReadIds: []
   };
 
   /* Muat preferensi lokal per perangkat (keranjang dan tampilan) */
@@ -86,6 +91,14 @@
         state.ui.buttonHex = normalizeHex(ui.buttonHex) || hexFromButton(state.ui.button);
       }
     } catch (e) {}
+    try {
+      var ids = JSON.parse(localStorage.getItem(STORAGE_KEYS.notif) || '[]');
+      state.notifReadIds = Array.isArray(ids) ? ids.map(String) : [];
+    } catch (e) { state.notifReadIds = []; }
+  }
+
+  function saveNotifRead() {
+    try { localStorage.setItem(STORAGE_KEYS.notif, JSON.stringify(state.notifReadIds)); } catch (e) {}
   }
 
   function saveUiPrefs() {
@@ -201,6 +214,34 @@
     };
   }
 
+  function trxTime(t) {
+    var d = Date.parse(t && t.at ? t.at : '');
+    return isNaN(d) ? 0 : d;
+  }
+
+  function sortedTransactions() {
+    return (state.transactions || []).slice().sort(function (a, b) {
+      return trxTime(b) - trxTime(a);
+    });
+  }
+
+  function upsertTransaction(trx) {
+    if (!trx || !trx.id) return;
+    var next = [];
+    var seen = false;
+    state.transactions.forEach(function (t) {
+      if (String(t.id) === String(trx.id)) {
+        next.push(trx);
+        seen = true;
+      } else {
+        next.push(t);
+      }
+    });
+    if (!seen) next.push(trx);
+    state.transactions = next;
+    state.transactions = sortedTransactions();
+  }
+
   function mapTransaction(t) {
     var method = String(t.payment_method || t.payMethod || t.pay_method || 'tunai').toLowerCase();
     if (method === 'cash') method = 'tunai';
@@ -229,6 +270,7 @@
     state.products = (Array.isArray(data.products) ? data.products : []).map(mapProduct);
     state.batches = (Array.isArray(data.batches) ? data.batches : []).map(function (b) { return mapBatch(b, state.products); });
     state.transactions = (Array.isArray(data.transactions) ? data.transactions : []).map(mapTransaction);
+    state.transactions = sortedTransactions();
     var raw = data.settings || {};
     state.settings = {
       storeName: raw.storeName || raw.store_name || 'UMKM Kasir',
@@ -272,7 +314,7 @@
   function renderCurrentPage() {
     renderKasir();
     renderCart();
-    updateNotifBadge(countNearExpiry());
+    updateNotifBadge();
     if (state.page === 'dashboard') renderDashboard();
     if (state.page === 'stok') renderStok();
     if (state.page === 'expired') renderExpired();
@@ -500,9 +542,13 @@
       if (!trx.total) trx.total = cartTotal();
       if (!trx.discount) trx.discount = cartDiscount();
       if (!trx.tax) trx.tax = cartTax();
+      if (!trx.at) trx.at = new Date().toISOString();
+      if (!trx.payMethod) trx.payMethod = state.payMethod;
+      upsertTransaction(trx);
       state.cart = [];
       state.lastTrx = trx;
       saveCart();
+      renderCurrentPage();
       var discEl = document.getElementById('cart-discount');
       var paidEl = document.getElementById('cart-paid');
       if (discEl) discEl.value = '0';
@@ -891,27 +937,71 @@
     }).join('');
   }
 
+  function riwayatRange() {
+    if (state.riwayatFrom || state.riwayatTo) {
+      return { from: state.riwayatFrom, to: state.riwayatTo };
+    }
+    if (state.riwayatPeriod === 'all') return { from: '', to: '' };
+    var end = new Date();
+    var start = new Date();
+    if (state.riwayatPeriod === '7') start.setDate(start.getDate() - 6);
+    else if (state.riwayatPeriod === '30') start.setDate(start.getDate() - 29);
+    return { from: localDateKey(start), to: localDateKey(end) };
+  }
+
   /* Render riwayat transaksi dari server */
   function renderRiwayat() {
     var listEl = document.getElementById('riwayat-list');
     if (!listEl) return;
+    var range = riwayatRange();
+    var fromEl = document.getElementById('riwayat-from');
+    var toEl = document.getElementById('riwayat-to');
+    if (fromEl && document.activeElement !== fromEl) fromEl.value = range.from;
+    if (toEl && document.activeElement !== toEl) toEl.value = range.to;
+    var periodEl = document.getElementById('riwayat-period');
+    if (periodEl) {
+      var periods = [
+        { id: 'today', label: 'Hari Ini' },
+        { id: '7', label: '7 Hari' },
+        { id: '30', label: '30 Hari' },
+        { id: 'all', label: 'Semua' }
+      ];
+      periodEl.innerHTML = periods.map(function (p) {
+        var active = !state.riwayatFrom && !state.riwayatTo && p.id === state.riwayatPeriod;
+        if ((state.riwayatFrom || state.riwayatTo) && p.id === 'all') active = false;
+        return '<button type="button" data-riwayat-period="' + p.id + '" class="shrink-0 h-8 px-3 rounded-full text-xs font-semibold ' +
+          (active ? 'bg-emerald-600 text-white' : 'bg-white text-slate-500 border border-emerald-100') + '">' + p.label + '</button>';
+      }).join('');
+    }
     var searchEl = document.getElementById('search-riwayat');
     var q = searchEl ? searchEl.value.trim().toLowerCase() : '';
-    var list = state.transactions;
-    if (q) {
-      list = list.filter(function (t) { return String(t.id).toLowerCase().indexOf(q) !== -1; });
+    var list = sortedTransactions().filter(function (t) {
+      var key = localDateKey(t.at);
+      if (range.from && key < range.from) return false;
+      if (range.to && key > range.to) return false;
+      if (!q) return true;
+      return String(t.id).toLowerCase().indexOf(q) !== -1 ||
+        String(t.cashier || '').toLowerCase().indexOf(q) !== -1;
+    });
+    var total = list.reduce(function (s, t) { return s + (Number(t.total) || 0); }, 0);
+    var summaryEl = document.getElementById('riwayat-summary');
+    if (summaryEl) {
+      var label = (range.from || '-') + ' s/d ' + (range.to || '-');
+      if (!range.from && !range.to) label = 'Semua tanggal';
+      summaryEl.textContent = list.length + ' transaksi · ' + formatRupiah(total) + ' · ' + label;
     }
     if (!list.length) {
-      listEl.innerHTML = '<p class="text-sm text-slate-400 py-10 text-center">Belum ada transaksi.</p>';
+      listEl.innerHTML = '<p class="text-sm text-slate-400 py-10 text-center">Tidak ada transaksi pada rentang ini.</p>';
       return;
     }
     listEl.innerHTML = list.map(function (t) {
       var itemCount = (t.lines || []).reduce(function (s, l) { return s + Number(l.qty || 0); }, 0);
+      var when = trxTime(t) ? new Date(t.at).toLocaleString('id-ID') : '-';
       return '<article class="bg-white rounded-2xl p-3 card-shadow">' +
         '<div class="flex items-start justify-between gap-2">' +
           '<div class="min-w-0">' +
             '<p class="font-semibold text-sm truncate">' + escapeHtml(t.id) + '</p>' +
-            '<p class="text-[11px] text-slate-400">' + new Date(t.at).toLocaleString('id-ID') + '</p>' +
+            '<p class="text-[11px] text-slate-400">' + when + '</p>' +
             '<p class="text-[11px] text-slate-500">' + escapeHtml(t.cashier || '-') + ' · ' + escapeHtml(String(t.payMethod || '-').toUpperCase()) + ' · ' + itemCount + ' item</p>' +
           '</div>' +
           '<p class="text-sm font-bold text-emerald-700 whitespace-nowrap">' + formatRupiah(t.total) + '</p>' +
@@ -935,7 +1025,7 @@
 
   /* Transaksi yang masuk rentang tanggal laporan */
   function filteredTransactions(from, to) {
-    return state.transactions.filter(function (t) {
+    return sortedTransactions().filter(function (t) {
       var key = localDateKey(t.at);
       if (from && key < from) return false;
       if (to && key > to) return false;
@@ -1430,7 +1520,7 @@
       var min = prod && prod.minStock != null ? Number(prod.minStock) : 5;
       return p.stock <= min;
     }).length;
-    updateNotifBadge(nearExp);
+    updateNotifBadge();
     var cards = [
       { label: 'Total Produk', value: String(catalog.length), sub: 'dari batch stok', cls: 'text-emerald-700' },
       { label: 'Total Stok', value: String(totalStock), sub: 'semua rak', cls: 'text-emerald-700' },
@@ -1487,12 +1577,77 @@
     return count;
   }
 
-  /* Perbarui badge notifikasi jumlah batch hampir expired */
-  function updateNotifBadge(count) {
+  function expiryAlerts() {
+    return state.batches
+      .filter(function (b) { return Number(b.stock) > 0 && daysUntil(b.expiredDate) <= 7; })
+      .sort(function (a, b) { return daysUntil(a.expiredDate) - daysUntil(b.expiredDate); });
+  }
+
+  function unreadNotifCount() {
+    var read = {};
+    (state.notifReadIds || []).forEach(function (id) { read[String(id)] = true; });
+    return expiryAlerts().filter(function (b) { return !read[String(b.id)]; }).length;
+  }
+
+  function markNotifsRead() {
+    var ids = expiryAlerts().map(function (b) { return String(b.id); });
+    var map = {};
+    (state.notifReadIds || []).forEach(function (id) { map[String(id)] = true; });
+    ids.forEach(function (id) { map[id] = true; });
+    state.notifReadIds = Object.keys(map);
+    saveNotifRead();
+    updateNotifBadge();
+  }
+
+  function clearNotifs() {
+    var map = {};
+    (state.notifReadIds || []).forEach(function (id) { map[String(id)] = true; });
+    expiryAlerts().forEach(function (b) { map[String(b.id)] = true; });
+    state.notifReadIds = Object.keys(map);
+    saveNotifRead();
+    updateNotifBadge();
+    var list = document.getElementById('notif-list');
+    if (list) list.innerHTML = '<p class="text-xs text-slate-400 py-4 text-center">Tidak ada notifikasi</p>';
+  }
+
+  function renderNotifPanel() {
+    var list = document.getElementById('notif-list');
+    if (!list) return;
+    var items = expiryAlerts();
+    if (!items.length) {
+      list.innerHTML = '<p class="text-xs text-slate-400 py-4 text-center">Tidak ada notifikasi</p>';
+      return;
+    }
+    list.innerHTML = items.map(function (b) {
+      var st = expiryStatus(b.expiredDate);
+      return '<button type="button" data-notif-id="' + escapeAttr(b.id) + '" class="w-full text-left bg-slate-50 rounded-xl px-2 py-1.5">' +
+        '<p class="text-xs font-semibold truncate">' + escapeHtml(b.name) + '</p>' +
+        '<p class="text-[10px] text-slate-400">Rak ' + escapeHtml(b.location || '-') + ' · stok ' + (Number(b.stock) || 0) + '</p>' +
+        '<span class="inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded-full ' + st.cls + '">' + st.label + '</span>' +
+      '</button>';
+    }).join('');
+  }
+
+  function toggleNotifPanel() {
+    var panel = document.getElementById('notif-panel');
+    if (!panel) {
+      setPage('expired');
+      return;
+    }
+    var open = panel.classList.contains('hidden');
+    panel.classList.toggle('hidden', !open);
+    if (open) {
+      renderNotifPanel();
+      markNotifsRead();
+    }
+  }
+
+  /* Badge merah hanya untuk notifikasi yang belum dibaca */
+  function updateNotifBadge() {
     var badge = document.getElementById('notif-badge');
     if (!badge) return;
-    badge.textContent = String(count);
-    badge.classList.toggle('hidden', !count);
+    var count = unreadNotifCount();
+    badge.classList.toggle('hidden', count <= 0);
   }
 
   /* Daftar peringatan batch H-7 dan H-3 */
@@ -1569,23 +1724,24 @@
     }).join('');
   }
 
-  /* Aktivitas transaksi terbaru */
+  /* Aktivitas transaksi terbaru, sumber sama dengan menu Riwayat */
   function renderDashActivity() {
     var wrap = document.getElementById('dash-activity');
     if (!wrap) return;
-    var list = state.transactions.slice(0, 5);
+    var list = sortedTransactions().slice(0, 5);
     if (!list.length) {
       wrap.innerHTML = '<p class="text-sm text-slate-400 py-4 text-center">Belum ada transaksi</p>';
       return;
     }
     wrap.innerHTML = list.map(function (t) {
-      return '<div class="flex items-center justify-between gap-2 bg-slate-50 rounded-xl px-3 py-2">' +
+      var when = trxTime(t) ? new Date(t.at).toLocaleString('id-ID') : '-';
+      return '<button type="button" data-open-riwayat="' + escapeAttr(t.id) + '" class="w-full flex items-center justify-between gap-2 bg-slate-50 rounded-xl px-3 py-2 text-left">' +
         '<div class="min-w-0">' +
-          '<p class="text-xs font-semibold">' + escapeHtml(t.id) + '</p>' +
-          '<p class="text-[10px] text-slate-400">' + new Date(t.at).toLocaleString('id-ID') + ' · ' + escapeHtml(t.payMethod || '-') + '</p>' +
+          '<p class="text-xs font-semibold truncate">' + escapeHtml(t.id || '-') + '</p>' +
+          '<p class="text-[10px] text-slate-400">' + when + ' · ' + escapeHtml(String(t.payMethod || '-').toUpperCase()) + '</p>' +
         '</div>' +
         '<span class="text-xs font-bold text-emerald-700 whitespace-nowrap">' + formatRupiah(t.total) + '</span>' +
-      '</div>';
+      '</button>';
     }).join('');
   }
 
@@ -1830,8 +1986,42 @@
         if (e.target === modalOverlay) closeModal();
       });
     }
+    var dashActivity = document.getElementById('dash-activity');
+    if (dashActivity) {
+      dashActivity.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-open-riwayat]');
+        if (!btn) return;
+        var searchEl = document.getElementById('search-riwayat');
+        if (searchEl) searchEl.value = btn.getAttribute('data-open-riwayat') || '';
+        setPage('riwayat');
+      });
+    }
     var notif = document.getElementById('btn-notif');
-    if (notif) notif.addEventListener('click', function () { setPage('expired'); });
+    if (notif) notif.addEventListener('click', function (e) {
+      e.stopPropagation();
+      toggleNotifPanel();
+    });
+    var notifClear = document.getElementById('btn-notif-clear');
+    if (notifClear) notifClear.addEventListener('click', function (e) {
+      e.stopPropagation();
+      clearNotifs();
+    });
+    var notifList = document.getElementById('notif-list');
+    if (notifList) {
+      notifList.addEventListener('click', function (e) {
+        var item = e.target.closest('[data-notif-id]');
+        if (!item) return;
+        var panel = document.getElementById('notif-panel');
+        if (panel) panel.classList.add('hidden');
+        setPage('expired');
+      });
+    }
+    document.addEventListener('click', function (e) {
+      var panel = document.getElementById('notif-panel');
+      if (!panel || panel.classList.contains('hidden')) return;
+      if (e.target.closest('#notif-panel') || e.target.closest('#btn-notif')) return;
+      panel.classList.add('hidden');
+    });
     var themeBtn = document.getElementById('btn-theme');
     if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
 
@@ -1846,6 +2036,31 @@
     }
     var riwayatSearch = document.getElementById('search-riwayat');
     if (riwayatSearch) riwayatSearch.addEventListener('input', renderRiwayat);
+    var riwayatPeriod = document.getElementById('riwayat-period');
+    if (riwayatPeriod) {
+      riwayatPeriod.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-riwayat-period]');
+        if (!btn) return;
+        state.riwayatPeriod = btn.getAttribute('data-riwayat-period');
+        state.riwayatFrom = '';
+        state.riwayatTo = '';
+        renderRiwayat();
+      });
+    }
+    var riwayatFrom = document.getElementById('riwayat-from');
+    if (riwayatFrom) {
+      riwayatFrom.addEventListener('change', function () {
+        state.riwayatFrom = riwayatFrom.value;
+        renderRiwayat();
+      });
+    }
+    var riwayatTo = document.getElementById('riwayat-to');
+    if (riwayatTo) {
+      riwayatTo.addEventListener('change', function () {
+        state.riwayatTo = riwayatTo.value;
+        renderRiwayat();
+      });
+    }
 
     var periodEl = document.getElementById('laporan-period');
     if (periodEl) {

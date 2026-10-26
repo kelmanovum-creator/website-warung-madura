@@ -127,10 +127,19 @@
               <svg id="theme-icon-moon" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
               <svg id="theme-icon-sun" class="w-5 h-5 hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
             </button>
-            <button id="btn-notif" type="button" aria-label="Notifikasi kedaluwarsa" class="relative w-10 h-10 rounded-full bg-emerald-600 hover:bg-emerald-500 flex items-center justify-center">
-              <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-              <span id="notif-badge" class="hidden absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-[10px] font-bold flex items-center justify-center">0</span>
-            </button>
+            <div class="relative">
+              <button id="btn-notif" type="button" aria-label="Notifikasi kedaluwarsa" class="relative w-10 h-10 rounded-full bg-emerald-600 hover:bg-emerald-500 flex items-center justify-center">
+                <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                <span id="notif-badge" class="hidden absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-rose-500 border-2 border-white"></span>
+              </button>
+              <div id="notif-panel" class="hidden absolute right-0 top-12 z-50 w-72 bg-white text-slate-800 rounded-2xl card-shadow border border-emerald-100 p-3">
+                <div class="flex items-center justify-between gap-2 mb-2">
+                  <p class="text-sm font-bold text-emerald-800">Notifikasi</p>
+                  <button id="btn-notif-clear" type="button" class="text-[11px] text-slate-500">Hapus</button>
+                </div>
+                <div id="notif-list" class="space-y-2 max-h-64 overflow-y-auto no-scrollbar"></div>
+              </div>
+            </div>
           </div>
         </div>
         <p id="header-sub" class="mt-1 text-xs text-emerald-100">Ringkasan omzet, stok, dan kedaluwarsa</p>
@@ -204,7 +213,19 @@
       </main>
 
       <main id="page-riwayat" class="hidden px-4 pt-4 safe-bottom">
-        <input id="search-riwayat" type="search" placeholder="Cari no. transaksi..." class="w-full h-11 px-3 mb-3 rounded-xl border border-emerald-100 bg-white text-sm" />
+        <input id="search-riwayat" type="search" placeholder="Cari no. transaksi / kasir..." class="w-full h-11 px-3 mb-3 rounded-xl border border-emerald-100 bg-white text-sm" />
+        <div id="riwayat-period" class="flex gap-2 overflow-x-auto no-scrollbar mb-3"></div>
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          <div>
+            <label class="block text-[11px] text-slate-500 mb-1">Dari tanggal</label>
+            <input id="riwayat-from" type="date" class="w-full h-10 px-2 rounded-xl border border-slate-200 text-xs bg-white" />
+          </div>
+          <div>
+            <label class="block text-[11px] text-slate-500 mb-1">Sampai tanggal</label>
+            <input id="riwayat-to" type="date" class="w-full h-10 px-2 rounded-xl border border-slate-200 text-xs bg-white" />
+          </div>
+        </div>
+        <p id="riwayat-summary" class="text-xs text-slate-500 mb-3"></p>
         <div id="riwayat-list" class="space-y-2"></div>
       </main>
 
@@ -353,6 +374,6 @@
     <div id="toast" class="hidden fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] max-w-[90%] px-4 py-2 rounded-full bg-slate-800 text-white text-sm"></div>
   </div>
 
-  <script src="app.js?v=auth2"></script>
+  <script src="app.js?v=riwayat1"></script>
 </body>
 </html>
