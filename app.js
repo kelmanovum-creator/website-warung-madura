@@ -118,19 +118,27 @@
     localStorage.setItem(STORAGE_KEYS.cart, JSON.stringify(state.cart));
   }
 
+  function parseSheetsBody(res, text) {
+    var trimmed = String(text || '').trim();
+    if (!trimmed) throw new Error('Server tidak merespons');
+    if (trimmed.charAt(0) === '<' || trimmed.toLowerCase().indexOf('<!doctype') === 0) {
+      throw new Error('Server akun sedang sibuk. Coba beberapa detik lagi.');
+    }
+    var body = {};
+    try { body = JSON.parse(trimmed); } catch (e) { throw new Error('Respons database tidak valid'); }
+    if (!res.ok) throw new Error(body.error || body.message || ('Permintaan gagal (' + res.status + ')'));
+    return body;
+  }
+
   /* Panggil Apps Script (Google Sheets) dengan JSON plain text agar tidak kena preflight CORS */
   function sheetsPost(url, payload) {
     return fetch(url, {
       method: 'POST',
+      redirect: 'follow',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(payload || {})
     }).then(function (res) {
-      return res.text().then(function (text) {
-        var body = {};
-        try { body = text ? JSON.parse(text) : {}; } catch (e) { throw new Error('Respons database tidak valid'); }
-        if (!res.ok) throw new Error(body.error || body.message || ('Permintaan gagal (' + res.status + ')'));
-        return body;
-      });
+      return res.text().then(function (text) { return parseSheetsBody(res, text); });
     });
   }
 
@@ -140,14 +148,20 @@
       if (params[k] === undefined || params[k] === null || params[k] === '') return;
       qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
     });
-    return fetch(url + (qs.length ? '?' + qs.join('&') : '')).then(function (res) {
-      return res.text().then(function (text) {
-        var body = {};
-        try { body = text ? JSON.parse(text) : {}; } catch (e) { throw new Error('Respons database tidak valid'); }
-        if (!res.ok) throw new Error(body.error || body.message || ('Permintaan gagal (' + res.status + ')'));
-        return body;
-      });
+    return fetch(url + (qs.length ? '?' + qs.join('&') : ''), { redirect: 'follow' }).then(function (res) {
+      return res.text().then(function (text) { return parseSheetsBody(res, text); });
     });
+  }
+
+  function authOk(body) {
+    if (!body || typeof body !== 'object') return false;
+    if (body.ok === false || body.status === 'error' || body.success === false) return false;
+    var status = String(body.status || body.result || '').toLowerCase();
+    if (status === 'success' || status === 'ok' || status === 'registered' || status === 'created') return true;
+    if (body.ok === true || body.success === true) return true;
+    var msg = String(body.message || '').toLowerCase();
+    if (msg.indexOf('berhasil') !== -1 || msg.indexOf('success') !== -1) return true;
+    return false;
   }
 
   function assertOk(body) {
@@ -2032,16 +2046,31 @@
     else localStorage.removeItem(STORAGE_KEYS.session);
   }
 
-  function showLoginError(msg) {
+  function showLoginError(msg, ok) {
     var el = document.getElementById('login-error');
     if (!el) return;
     if (!msg) {
       el.classList.add('hidden');
       el.textContent = '';
+      el.classList.remove('text-rose-600', 'text-emerald-700');
       return;
     }
     el.textContent = msg;
-    el.classList.remove('hidden');
+    el.classList.remove('hidden', 'text-rose-600', 'text-emerald-700');
+    el.classList.add(ok ? 'text-emerald-700' : 'text-rose-600');
+  }
+
+  function setAuthMode(mode) {
+    var loginForm = document.getElementById('form-login');
+    var registerForm = document.getElementById('form-register');
+    var title = document.getElementById('auth-title');
+    var toggle = document.getElementById('btn-toggle-auth');
+    var register = mode === 'register';
+    if (loginForm) loginForm.classList.toggle('hidden', register);
+    if (registerForm) registerForm.classList.toggle('hidden', !register);
+    if (title) title.textContent = register ? 'Daftar Akun Baru' : 'Masuk ke Kasir';
+    if (toggle) toggle.textContent = register ? 'Sudah punya akun? Masuk' : 'Belum punya akun? Daftar';
+    showLoginError('');
   }
 
   function setAuthUi(loggedIn) {
@@ -2080,7 +2109,7 @@
     showLoginError('');
     sheetsPost(API_LOGIN, { action: 'login', username: username, password: password })
       .then(function (body) {
-        if (body.status !== 'success' && body.ok !== true) throw new Error(body.message || body.error || 'Login gagal');
+        if (!authOk(body)) throw new Error(body.message || body.error || 'Login gagal');
         state.user = { username: body.username || username };
         saveSession();
         enterApp();
@@ -2089,19 +2118,35 @@
       .then(function () { if (btn) btn.disabled = false; });
   }
 
-  function handleRegister() {
-    var form = document.getElementById('form-login');
-    if (!form) return;
+  function handleRegister(event) {
+    event.preventDefault();
+    var form = event.target;
     var username = formField(form, 'username').value.trim();
     var password = formField(form, 'password').value;
+    var password2El = formField(form, 'password2');
+    var password2 = password2El ? password2El.value : '';
     if (!username || !password) return showLoginError('Isi username dan password untuk daftar');
+    if (username.length < 3) return showLoginError('Username minimal 3 karakter');
+    if (password.length < 4) return showLoginError('Password minimal 4 karakter');
+    if (password !== password2) return showLoginError('Password tidak sama');
     var btn = document.getElementById('btn-register');
     if (btn) btn.disabled = true;
     showLoginError('');
     sheetsPost(API_LOGIN, { action: 'register', username: username, password: password, name: username })
       .then(function (body) {
-        if (body.status !== 'success' && body.ok !== true) throw new Error(body.message || body.error || 'Registrasi gagal');
-        showLoginError(body.message || 'Registrasi berhasil. Silakan masuk.');
+        if (!authOk(body)) throw new Error(body.message || body.error || 'Registrasi gagal');
+        showLoginError(body.message || 'Akun berhasil dibuat. Masuk otomatis...', true);
+        return sheetsPost(API_LOGIN, { action: 'login', username: username, password: password });
+      })
+      .then(function (body) {
+        if (!authOk(body)) {
+          setAuthMode('login');
+          showLoginError('Akun dibuat. Silakan masuk.', true);
+          return;
+        }
+        state.user = { username: body.username || username };
+        saveSession();
+        enterApp();
       })
       .catch(function (err) { showLoginError(err.message || 'Registrasi gagal'); })
       .then(function () { if (btn) btn.disabled = false; });
@@ -2127,8 +2172,16 @@
     bindKasirEvents();
     var loginForm = document.getElementById('form-login');
     if (loginForm) loginForm.addEventListener('submit', handleLogin);
-    var registerBtn = document.getElementById('btn-register');
-    if (registerBtn) registerBtn.addEventListener('click', handleRegister);
+    var registerForm = document.getElementById('form-register');
+    if (registerForm) registerForm.addEventListener('submit', handleRegister);
+    var toggleAuth = document.getElementById('btn-toggle-auth');
+    if (toggleAuth) {
+      toggleAuth.addEventListener('click', function () {
+        var registerFormEl = document.getElementById('form-register');
+        var registerVisible = registerFormEl && !registerFormEl.classList.contains('hidden');
+        setAuthMode(registerVisible ? 'login' : 'register');
+      });
+    }
     var logoutBtn = document.getElementById('btn-logout');
     if (logoutBtn) logoutBtn.addEventListener('click', handleLogout);
     if (state.user && state.user.username) enterApp();
