@@ -21,9 +21,20 @@ Variabel lingkungan yang tersedia:
 
 Jika `APP_USERNAME` dan `APP_PASSWORD` diisi, seluruh halaman dan API dilindungi basic auth. Endpoint `/api/health` tetap terbuka untuk health check platform.
 
-## Deploy ke Render (disarankan)
+## Deploy ke Vercel (disarankan, gratis)
 
-Render adalah hosting termurah yang mendukung disk persisten untuk SQLite.
+Frontend ini statis; data bisnis tersimpan di Google Sheets. Vercel hanya mengunggah `index.html` dan `app.js`.
+
+1. Push repository ini ke GitHub.
+2. Buka [vercel.com](https://vercel.com), **Add New Project**, pilih repo.
+3. Framework Preset: **Other**. Build Command dan Install Command biarkan sesuai `vercel.json`.
+4. Deploy. URL publik berformat `https://nama-proyek.vercel.app`.
+
+Jika masih 500: di Settings > General, set Framework Preset ke **Other**, Output Directory `dist`, lalu Redeploy.
+
+## Deploy ke Render (SQLite, berbayar)
+
+Render adalah hosting yang mendukung disk persisten untuk SQLite.
 
 1. Push repository ini ke GitHub.
 2. Buka dashboard Render, pilih **New > Blueprint**.
