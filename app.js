@@ -2404,6 +2404,23 @@
     el.classList.add(ok ? 'text-emerald-700' : 'text-rose-600');
   }
 
+  function bindPasswordToggles() {
+    document.querySelectorAll('[data-toggle-password]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var wrap = btn.parentElement;
+        var input = wrap ? wrap.querySelector('input') : null;
+        if (!input) return;
+        var show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        var eye = btn.querySelector('[data-eye]');
+        var eyeOff = btn.querySelector('[data-eye-off]');
+        if (eye) eye.classList.toggle('hidden', !show);
+        if (eyeOff) eyeOff.classList.toggle('hidden', show);
+        btn.setAttribute('aria-label', show ? 'Sembunyikan password' : 'Tampilkan password');
+      });
+    });
+  }
+
   function setAuthMode(mode) {
     var loginForm = document.getElementById('form-login');
     var registerForm = document.getElementById('form-register');
@@ -2520,6 +2537,7 @@
     applyAppearance();
     renderNav();
     bindKasirEvents();
+    bindPasswordToggles();
     var loginForm = document.getElementById('form-login');
     if (loginForm) loginForm.addEventListener('submit', handleLogin);
     var registerForm = document.getElementById('form-register');
