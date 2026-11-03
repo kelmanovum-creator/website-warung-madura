@@ -57,7 +57,7 @@
       body { max-width: none; margin: 0; }
       #mobile-nav { display: none !important; }
       .safe-bottom { padding-bottom: 24px; }
-      #cart-overlay, #modal-overlay, #confirm-overlay, #success-overlay {
+      #cart-overlay, #modal-overlay, #confirm-overlay, #success-overlay, #scan-overlay {
         max-width: none !important;
       }
     }
@@ -80,6 +80,25 @@
     html.dark .border-slate-200 { border-color: #0e4634 !important; }
     html.dark .text-emerald-700,
     html.dark .text-emerald-800 { color: #6ee7b7 !important; }
+    #scan-video, #scan-reader {
+      width: 100%;
+      height: 280px;
+      object-fit: cover;
+      background: #000;
+      border-radius: 1rem;
+    }
+    #scan-reader { overflow: hidden; }
+    .scan-frame {
+      position: absolute;
+      left: 12%;
+      right: 12%;
+      top: 18%;
+      bottom: 18%;
+      border: 2px solid #34d399;
+      border-radius: 0.75rem;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,0.35);
+      pointer-events: none;
+    }
 
   </style>
 </head>
@@ -197,6 +216,10 @@
           <input id="search-kasir" type="search" placeholder="Cari produk..." class="flex-1 h-11 px-3 rounded-xl border border-emerald-100 bg-white text-sm outline-none focus:ring-2 focus:ring-emerald-400" />
           <button id="btn-open-cart" type="button" class="h-11 px-3 rounded-xl bg-emerald-600 text-white text-sm font-semibold">Keranjang</button>
         </div>
+        <button id="btn-scan-kasir" type="button" class="w-full h-12 mb-3 rounded-xl bg-emerald-600 text-white text-sm font-semibold flex items-center justify-center gap-2">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 8h2v8H7zM11 8h1v8h-1zM14 8h3v8h-3z"/></svg>
+          Scan
+        </button>
         <div id="kasir-cats" class="flex gap-2 overflow-x-auto no-scrollbar mb-3"></div>
         <div id="kasir-list" class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>
         <p id="kasir-empty" class="hidden text-center text-sm text-slate-500 py-16">Belum ada produk. Tambah stok dulu di menu Stok.</p>
@@ -205,11 +228,18 @@
       <main id="page-stok" class="hidden px-4 pt-4 safe-bottom">
         <form id="form-barang" class="bg-white rounded-2xl p-4 card-shadow mb-4 space-y-3">
           <h2 class="font-bold text-emerald-800">Input Barang Baru</h2>
+          <label class="block text-xs text-slate-500">Barcode (opsional)</label>
+          <div class="flex gap-2">
+            <input id="input-barcode" name="barcode" inputmode="numeric" placeholder="Barcode / kode produk" class="flex-1 h-11 px-3 rounded-xl border border-slate-200 text-sm" />
+            <button id="btn-scan-stok" type="button" class="h-11 px-4 rounded-xl bg-emerald-600 text-white text-sm font-semibold shrink-0">Scan</button>
+          </div>
+          <p id="barcode-hint" class="hidden text-xs text-emerald-700"></p>
           <input name="name" required placeholder="Nama barang" class="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm" />
           <div class="grid grid-cols-2 gap-2">
             <input name="stock" type="number" min="1" required placeholder="Stok" class="h-11 px-3 rounded-xl border border-slate-200 text-sm" />
             <input name="price" type="number" min="0" required placeholder="Harga (Rp)" class="h-11 px-3 rounded-xl border border-slate-200 text-sm" />
           </div>
+          <input name="unit" placeholder="Satuan (pcs)" class="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm" />
           <input name="location" required placeholder="Lokasi rak (contoh: A-12)" class="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm" />
           <input name="category" placeholder="Kategori (opsional)" class="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm" />
           <label class="block text-xs text-slate-500">Tanggal Expired</label>
@@ -389,9 +419,36 @@
       </div>
     </div>
 
-    <div id="toast" class="hidden fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] max-w-[90%] px-4 py-2 rounded-full bg-slate-800 text-white text-sm"></div>
+    <div id="scan-overlay" class="hidden fixed inset-0 z-[70] max-w-[440px] mx-auto md:max-w-none bg-black/70 flex items-end md:items-center md:justify-center">
+      <div class="w-full md:max-w-lg bg-white rounded-t-3xl md:rounded-3xl p-4 max-h-[92vh] overflow-y-auto no-scrollbar">
+        <div class="flex items-center justify-between mb-3">
+          <h3 id="scan-title" class="font-bold">Scan Barcode</h3>
+          <button id="btn-close-scan" type="button" class="h-10 px-3 rounded-xl border border-slate-200 text-sm font-semibold">Tutup</button>
+        </div>
+        <div class="relative mb-3">
+          <video id="scan-video" class="hidden" autoplay playsinline muted></video>
+          <div id="scan-reader" class="hidden"></div>
+          <div id="scan-frame" class="scan-frame hidden"></div>
+        </div>
+        <p id="scan-status" class="text-sm text-slate-600 mb-3">Arahkan kamera ke barcode</p>
+        <div id="scan-notfound" class="hidden mb-3 p-3 rounded-xl bg-amber-50 border border-amber-200">
+          <p class="text-sm text-amber-800 mb-2">Produk tidak ditemukan. Tambahkan lewat menu Stok?</p>
+          <div class="flex gap-2">
+            <button id="btn-scan-notfound-cancel" type="button" class="flex-1 h-11 rounded-xl border border-slate-200 text-sm">Lanjut Scan</button>
+            <button id="btn-scan-notfound-stok" type="button" class="flex-1 h-11 rounded-xl bg-emerald-600 text-white text-sm font-semibold">Tambah di Stok</button>
+          </div>
+        </div>
+        <label class="block text-xs text-slate-500 mb-1">Input manual jika barcode rusak</label>
+        <div class="flex gap-2">
+          <input id="scan-manual" type="text" inputmode="numeric" placeholder="Ketik barcode" class="flex-1 h-11 px-3 rounded-xl border border-slate-200 text-sm" />
+          <button id="btn-scan-manual" type="button" class="h-11 px-4 rounded-xl bg-emerald-600 text-white text-sm font-semibold shrink-0">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="hidden fixed left-1/2 -translate-x-1/2 bottom-24 z-[80] max-w-[90%] px-4 py-2 rounded-full bg-slate-800 text-white text-sm"></div>
   </div>
 
-  <script src="app.js?v=eye1"></script>
+  <script src="app.js?v=barcode2"></script>
 </body>
 </html>

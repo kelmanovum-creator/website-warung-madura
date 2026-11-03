@@ -35,7 +35,8 @@ db.exec(`
     buy_price INTEGER NOT NULL DEFAULT 0,
     min_stock INTEGER NOT NULL DEFAULT 5,
     unit TEXT DEFAULT 'pcs',
-    location TEXT
+    location TEXT,
+    barcode TEXT DEFAULT ''
   );
   CREATE TABLE IF NOT EXISTS batches (
     id TEXT PRIMARY KEY,
@@ -44,7 +45,8 @@ db.exec(`
     price INTEGER NOT NULL DEFAULT 0,
     location TEXT,
     expired_date TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    barcode TEXT DEFAULT ''
   );
   CREATE INDEX IF NOT EXISTS idx_batches_name ON batches(name);
   CREATE INDEX IF NOT EXISTS idx_batches_exp ON batches(expired_date);
@@ -76,6 +78,15 @@ db.exec(`
     value TEXT
   );
 `);
+
+function ensureColumn(table, column, ddl) {
+  const cols = db.prepare('PRAGMA table_info(' + table + ')').all();
+  if (!cols.some((c) => c.name === column)) {
+    db.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + ddl);
+  }
+}
+ensureColumn('products', 'barcode', "barcode TEXT DEFAULT ''");
+ensureColumn('batches', 'barcode', "barcode TEXT DEFAULT ''");
 
 const DEFAULT_SETTINGS = { storeName: 'UMKM Kasir', cashierName: 'Kasir', taxPercent: 0 };
 
@@ -138,12 +149,12 @@ function seedIfEmpty() {
   ];
 
   const insertProduct = db.prepare(
-    `INSERT INTO products (id, sku, name, category, sell_price, buy_price, min_stock, unit, location)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO products (id, sku, name, category, sell_price, buy_price, min_stock, unit, location, barcode)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertBatch = db.prepare(
-    `INSERT INTO batches (id, name, stock, price, location, expired_date, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO batches (id, name, stock, price, location, expired_date, created_at, barcode)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   db.exec('BEGIN IMMEDIATE');
@@ -151,11 +162,11 @@ function seedIfEmpty() {
     demo.forEach((p, i) => {
       insertProduct.run(
         'P-DEMO-' + (i + 1), 'SKU-' + (1001 + i), p.name, p.category,
-        p.price, Math.round(p.price * 0.8), 5, 'pcs', p.location
+        p.price, Math.round(p.price * 0.8), 5, 'pcs', p.location, ''
       );
       insertBatch.run(
         'B-DEMO-' + (i + 1), p.name, p.stock, p.price, p.location,
-        p.expiredDate, '2026-09-01T00:00:00.000Z'
+        p.expiredDate, '2026-09-01T00:00:00.000Z', ''
       );
     });
     writeSettings(DEFAULT_SETTINGS);
@@ -177,7 +188,8 @@ function mapProduct(row) {
     buyPrice: Number(row.buy_price) || 0,
     minStock: Number(row.min_stock) || 0,
     unit: row.unit,
-    location: row.location
+    location: row.location,
+    barcode: row.barcode || ''
   };
 }
 
@@ -189,7 +201,8 @@ function mapBatch(row) {
     price: Number(row.price) || 0,
     location: row.location,
     expiredDate: row.expired_date,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    barcode: row.barcode || ''
   };
 }
 
@@ -258,12 +271,20 @@ function createBatch(payload) {
   const location = String(payload.location || '').trim();
   const expiredDate = String(payload.expiredDate || '').trim();
   const category = String(payload.category || '').trim() || 'Umum';
+  const unit = String(payload.unit || '').trim() || 'pcs';
+  const barcode = String(payload.barcode || '').trim();
 
   if (!name) throw new ApiError(400, 'Nama barang wajib diisi');
   if (!Number.isFinite(stock) || stock < 1) throw new ApiError(400, 'Stok minimal 1');
   if (!Number.isFinite(price) || price < 0) throw new ApiError(400, 'Harga tidak valid');
   if (!location) throw new ApiError(400, 'Lokasi rak wajib diisi');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(expiredDate)) throw new ApiError(400, 'Tanggal expired tidak valid');
+  if (barcode) {
+    const taken = db.prepare(
+      'SELECT name FROM products WHERE barcode = ? AND barcode != \'\' AND name != ? COLLATE NOCASE'
+    ).get(barcode, name);
+    if (taken) throw new ApiError(409, 'Barcode sudah terdaftar untuk produk lain');
+  }
 
   const id = 'B-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
   const createdAt = new Date().toISOString();
@@ -273,26 +294,26 @@ function createBatch(payload) {
     const existing = db.prepare('SELECT * FROM products WHERE name = ? COLLATE NOCASE').get(name);
     if (existing) {
       db.prepare(
-        `UPDATE products SET sell_price = ?, location = ? WHERE id = ?`
-      ).run(price, location, existing.id);
+        `UPDATE products SET sell_price = ?, location = ?, unit = ?, barcode = CASE WHEN ? != '' THEN ? ELSE barcode END WHERE id = ?`
+      ).run(price, location, unit, barcode, barcode, existing.id);
       if (payload.category && String(payload.category).trim()) {
         db.prepare('UPDATE products SET category = ? WHERE id = ?').run(category, existing.id);
       }
     } else {
       const productId = 'P-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
       db.prepare(
-        `INSERT INTO products (id, sku, name, category, sell_price, buy_price, min_stock, unit, location)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO products (id, sku, name, category, sell_price, buy_price, min_stock, unit, location, barcode)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         productId,
         'SKU-' + (1000 + db.prepare('SELECT COUNT(*) AS n FROM products').get().n + 1),
-        name, category, price, Math.round(price * 0.8), 5, 'pcs', location
+        name, category, price, Math.round(price * 0.8), 5, unit, location, barcode
       );
     }
     db.prepare(
-      `INSERT INTO batches (id, name, stock, price, location, expired_date, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, name, stock, price, location, expiredDate, createdAt);
+      `INSERT INTO batches (id, name, stock, price, location, expired_date, created_at, barcode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, name, stock, price, location, expiredDate, createdAt, barcode);
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
@@ -450,8 +471,8 @@ function restoreData(payload) {
     db.prepare('DELETE FROM settings').run();
 
     const insertProduct = db.prepare(
-      `INSERT INTO products (id, sku, name, category, sell_price, buy_price, min_stock, unit, location)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO products (id, sku, name, category, sell_price, buy_price, min_stock, unit, location, barcode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     products.forEach((p, i) => {
       const name = normalizeName(p.name);
@@ -465,13 +486,14 @@ function restoreData(payload) {
         Math.max(0, Math.floor(Number(p.buyPrice) || 0)),
         Math.max(0, Math.floor(Number(p.minStock) || 0)),
         String(p.unit || 'pcs'),
-        String(p.location || '')
+        String(p.location || ''),
+        String(p.barcode || '')
       );
     });
 
     const insertBatch = db.prepare(
-      `INSERT INTO batches (id, name, stock, price, location, expired_date, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO batches (id, name, stock, price, location, expired_date, created_at, barcode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     batches.forEach((b, i) => {
       const name = normalizeName(b.name);
@@ -483,7 +505,8 @@ function restoreData(payload) {
         Math.max(0, Math.floor(Number(b.price) || 0)),
         String(b.location || ''),
         b.expiredDate ? String(b.expiredDate) : null,
-        String(b.createdAt || new Date().toISOString())
+        String(b.createdAt || new Date().toISOString()),
+        String(b.barcode || '')
       );
     });
 
